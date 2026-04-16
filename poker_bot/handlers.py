@@ -8,6 +8,7 @@ from poker_bot.commentary import build_highlights
 from poker_bot.domain import settle_direct, settle_hub
 from poker_bot.formatting import eur
 from poker_bot.i18n import tr
+from poker_bot.notifications import CancelRequestNotification
 from poker_bot.parsing import normalize_name, parse_line
 from poker_bot.rendering import render_table, render_transfers
 from poker_bot.runtime import get_services
@@ -87,7 +88,7 @@ def _can_finalize_new_game(update: Update, session: GameSession) -> tuple[bool, 
     if user_id is None:
         return False, tr("subscription_required_new_calc")
 
-    subscription = services.billing.get_subscription(user_id)
+    subscription = services.billing.refresh_subscription(user_id) if services.billing.enabled else services.billing.get_subscription(user_id)
     if not subscription.is_active:
         return False, tr("subscription_required_new_calc")
 
@@ -131,6 +132,7 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     checkout_url = services.billing.create_checkout_session(
         telegram_user_id=user.id,
+        chat_id=_chat_id(update),
         username=user.username,
         first_name=user.first_name,
     )
@@ -144,7 +146,7 @@ async def subscription_status(update: Update, context: ContextTypes.DEFAULT_TYPE
         await _message(update).reply_text(tr("subscription_status_inactive"))
         return
 
-    subscription = services.billing.get_subscription(user_id)
+    subscription = services.billing.refresh_subscription(user_id) if services.billing.enabled else services.billing.get_subscription(user_id)
     if subscription.is_active:
         if subscription.current_period_end is not None:
             await _message(update).reply_text(
@@ -154,7 +156,57 @@ async def subscription_status(update: Update, context: ContextTypes.DEFAULT_TYPE
             await _message(update).reply_text(tr("subscription_status_active_open"))
         return
 
+    if subscription.status == "pending_activation":
+        await _message(update).reply_text(tr("subscription_status_pending"))
+        return
+    if subscription.status == "payment_problem":
+        await _message(update).reply_text(tr("subscription_status_payment_problem"))
+        return
+    if subscription.status == "canceled":
+        await _message(update).reply_text(tr("subscription_status_canceled"))
+        return
+    if subscription.status == "expired":
+        await _message(update).reply_text(tr("subscription_status_expired"))
+        return
+
     await _message(update).reply_text(tr("subscription_status_inactive"))
+
+
+async def cancel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    services = get_services()
+    message = _message(update)
+    user = update.effective_user
+    user_id = _sync_user(update)
+    if user is None or user_id is None:
+        await message.reply_text(tr("subscription_cancel_unavailable"))
+        return
+
+    subscription = services.billing.refresh_subscription(user_id) if services.billing.enabled else services.billing.get_subscription(user_id)
+    if subscription.status not in {"active", "pending_activation", "payment_problem"}:
+        await message.reply_text(tr("subscription_cancel_no_subscription"))
+        return
+
+    if not services.admin_notifier.enabled:
+        await message.reply_text(tr("subscription_cancel_unavailable"))
+        return
+
+    subscription = services.billing.mark_cancel_requested(
+        telegram_user_id=user_id,
+        requested_by_telegram_user_id=user_id,
+    )
+    await services.admin_notifier.notify_cancel_request(
+        context.bot,
+        CancelRequestNotification(
+            telegram_user_id=user_id,
+            username=user.username,
+            provider=subscription.provider,
+            provider_subscription_id=subscription.stripe_subscription_id,
+            local_status=subscription.status,
+            provider_status=subscription.provider_status,
+            source_chat_id=_chat_id(update),
+        ),
+    )
+    await message.reply_text(tr("subscription_cancel_requested"))
 
 
 async def newgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -330,6 +382,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("help", help_cmd))
     application.add_handler(CommandHandler("subscribe", subscribe))
     application.add_handler(CommandHandler("subscription", subscription_status))
+    application.add_handler(CommandHandler("cancel_subscription", cancel_subscription))
     application.add_handler(CommandHandler("newgame", newgame))
     application.add_handler(CommandHandler("add", add))
     application.add_handler(CommandHandler("addblock", addblock))

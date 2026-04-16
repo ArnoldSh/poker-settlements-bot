@@ -14,6 +14,7 @@ from poker_bot.db import build_engine, build_session_factory
 from poker_bot.handlers import register_handlers
 from poker_bot.i18n import tr
 from poker_bot.logging_utils import configure_logging
+from poker_bot.notifications import TelegramAdminNotifier
 from poker_bot.runtime import AppServices, configure_services, get_services
 from poker_bot.store import DatabaseStore
 
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI):
             settings=settings,
             store=DatabaseStore(session_factory),
             billing=StripeBillingService(settings, session_factory),
+            admin_notifier=TelegramAdminNotifier(settings.admin_telegram_chat_id),
         )
     )
     register_handlers(telegram_app)

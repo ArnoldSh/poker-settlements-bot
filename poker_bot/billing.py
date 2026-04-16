@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session, sessionmaker
 from poker_bot.config import Settings
 from poker_bot.models import StripeEventModel, TelegramUserModel, UserSubscriptionModel
 
-ACTIVE_SUBSCRIPTION_STATUSES = {"active", "trialing"}
+ACTIVE_SUBSCRIPTION_STATUSES = {"active"}
+PENDING_SUBSCRIPTION_STATUSES = {"pending_activation"}
 logger = logging.getLogger(__name__)
 
 
@@ -20,11 +21,16 @@ logger = logging.getLogger(__name__)
 class SubscriptionSnapshot:
     telegram_user_id: int
     status: str
+    provider: str
+    provider_status: str | None
     current_period_start: datetime | None
     current_period_end: datetime | None
     checkout_session_id: str | None
     stripe_customer_id: str | None
     stripe_subscription_id: str | None
+    requested_chat_id: int | None
+    pending_since: datetime | None
+    cancel_requested_at: datetime | None
 
     @property
     def is_active(self) -> bool:
@@ -74,34 +80,62 @@ class StripeBillingService:
             subscription = session.scalar(
                 select(UserSubscriptionModel).where(UserSubscriptionModel.telegram_user_id == telegram_user_id)
             )
-
             if subscription is None:
                 return SubscriptionSnapshot(
                     telegram_user_id=telegram_user_id,
                     status="inactive",
+                    provider="stripe",
+                    provider_status=None,
                     current_period_start=None,
                     current_period_end=None,
                     checkout_session_id=None,
                     stripe_customer_id=None,
                     stripe_subscription_id=None,
+                    requested_chat_id=None,
+                    pending_since=None,
+                    cancel_requested_at=None,
                 )
 
-            return SubscriptionSnapshot(
-                telegram_user_id=telegram_user_id,
-                status=subscription.status,
-                current_period_start=subscription.current_period_start,
-                current_period_end=subscription.current_period_end,
-                checkout_session_id=subscription.checkout_session_id,
-                stripe_customer_id=subscription.stripe_customer_id,
-                stripe_subscription_id=subscription.stripe_subscription_id,
-            )
+            return self._snapshot(subscription)
 
-    def has_active_subscription(self, telegram_user_id: int) -> bool:
-        return self.get_subscription(telegram_user_id).is_active
+    def refresh_subscription(self, telegram_user_id: int) -> SubscriptionSnapshot:
+        with self.session_factory.begin() as session:
+            subscription = session.scalar(
+                select(UserSubscriptionModel).where(UserSubscriptionModel.telegram_user_id == telegram_user_id)
+            )
+            if subscription is None:
+                return self.get_subscription(telegram_user_id)
+
+            if subscription.stripe_subscription_id:
+                self._sync_subscription_from_stripe(
+                    session,
+                    telegram_user_id=telegram_user_id,
+                    stripe_subscription_id=subscription.stripe_subscription_id,
+                    customer_id=subscription.stripe_customer_id,
+                )
+                session.flush()
+                session.refresh(subscription)
+                return self._snapshot(subscription)
+
+            if subscription.checkout_session_id:
+                stripe_subscription_id, customer_id = self._retrieve_checkout_subscription(subscription.checkout_session_id)
+                if stripe_subscription_id:
+                    self._sync_subscription_from_stripe(
+                        session,
+                        telegram_user_id=telegram_user_id,
+                        stripe_subscription_id=stripe_subscription_id,
+                        customer_id=customer_id or subscription.stripe_customer_id,
+                    )
+                    session.flush()
+                    session.refresh(subscription)
+                    return self._snapshot(subscription)
+
+            return self._snapshot(subscription)
 
     def create_checkout_session(
         self,
         telegram_user_id: int,
+        chat_id: int,
         username: str | None = None,
         first_name: str | None = None,
     ) -> str:
@@ -132,7 +166,13 @@ class StripeBillingService:
             )
 
             subscription = self._ensure_subscription_row(session, telegram_user_id)
+            subscription.provider = "stripe"
+            subscription.status = "pending_activation"
+            subscription.provider_status = "checkout_session_created"
             subscription.checkout_session_id = checkout_session["id"]
+            subscription.requested_chat_id = chat_id
+            subscription.pending_since = datetime.now(timezone.utc)
+            subscription.last_pending_reminder_at = None
             subscription.stripe_customer_id = customer_id
             subscription.stripe_price_id = self.settings.stripe_price_id
 
@@ -165,57 +205,92 @@ class StripeBillingService:
         logger.info("stripe webhook processed: event_id=%s", event_id)
         return {"event_id": event_id, "status": "processed"}
 
-    def force_subscription(
+    def mark_cancel_requested(
         self,
         telegram_user_id: int,
-        status: str,
-        days: int | None = None,
+        requested_by_telegram_user_id: int,
     ) -> SubscriptionSnapshot:
         with self.session_factory.begin() as session:
-            self._ensure_user_row(session, telegram_user_id)
             subscription = self._ensure_subscription_row(session, telegram_user_id)
-            subscription.status = status
-            subscription.current_period_start = datetime.now(timezone.utc)
-            subscription.current_period_end = (
-                datetime.now(timezone.utc) + timedelta(days=days) if days is not None else None
-            )
+            subscription.cancel_requested_at = datetime.now(timezone.utc)
+            subscription.cancel_requested_by_telegram_user_id = requested_by_telegram_user_id
 
         return self.get_subscription(telegram_user_id)
 
-    def debug_user_payload(self, telegram_user_id: int) -> dict[str, object]:
+    def list_pending_reminders(
+        self,
+        now: datetime | None = None,
+        reminder_interval: timedelta = timedelta(hours=24),
+    ) -> list[SubscriptionSnapshot]:
+        now = now or datetime.now(timezone.utc)
         with self.session_factory() as session:
-            user = session.scalar(
-                select(TelegramUserModel).where(TelegramUserModel.telegram_user_id == telegram_user_id)
-            )
+            subscriptions = session.scalars(
+                select(UserSubscriptionModel).where(UserSubscriptionModel.status.in_(PENDING_SUBSCRIPTION_STATUSES))
+            ).all()
+
+            results: list[SubscriptionSnapshot] = []
+            for subscription in subscriptions:
+                if subscription.pending_since is None:
+                    continue
+                if subscription.pending_since > now - reminder_interval:
+                    continue
+                if (
+                    subscription.last_pending_reminder_at is not None
+                    and subscription.last_pending_reminder_at > now - reminder_interval
+                ):
+                    continue
+                results.append(self._snapshot(subscription))
+            return results
+
+    def mark_pending_reminder_sent(
+        self,
+        telegram_user_id: int,
+        reminded_at: datetime | None = None,
+    ) -> None:
+        reminded_at = reminded_at or datetime.now(timezone.utc)
+        with self.session_factory.begin() as session:
             subscription = session.scalar(
                 select(UserSubscriptionModel).where(UserSubscriptionModel.telegram_user_id == telegram_user_id)
             )
+            if subscription is None:
+                return
+            subscription.last_pending_reminder_at = reminded_at
 
-            return {
-                "user": None
-                if user is None
-                else {
-                    "telegram_user_id": user.telegram_user_id,
-                    "username": user.username,
-                    "first_name": user.first_name,
-                    "stripe_customer_id": user.stripe_customer_id,
-                },
-                "subscription": None
-                if subscription is None
-                else {
-                    "status": subscription.status,
-                    "current_period_start": None
-                    if subscription.current_period_start is None
-                    else subscription.current_period_start.isoformat(),
-                    "current_period_end": None
-                    if subscription.current_period_end is None
-                    else subscription.current_period_end.isoformat(),
-                    "stripe_customer_id": subscription.stripe_customer_id,
-                    "stripe_subscription_id": subscription.stripe_subscription_id,
-                    "checkout_session_id": subscription.checkout_session_id,
-                    "stripe_price_id": subscription.stripe_price_id,
-                },
-            }
+    def expire_stale_pending_subscriptions(
+        self,
+        now: datetime | None = None,
+        expiration_window: timedelta = timedelta(days=7),
+    ) -> list[SubscriptionSnapshot]:
+        now = now or datetime.now(timezone.utc)
+        with self.session_factory.begin() as session:
+            subscriptions = session.scalars(
+                select(UserSubscriptionModel).where(UserSubscriptionModel.status.in_(PENDING_SUBSCRIPTION_STATUSES))
+            ).all()
+
+            expired: list[SubscriptionSnapshot] = []
+            for subscription in subscriptions:
+                if subscription.pending_since is None:
+                    continue
+                if subscription.pending_since > now - expiration_window:
+                    continue
+
+                if self.enabled and subscription.stripe_subscription_id:
+                    try:
+                        stripe.Subscription.cancel(subscription.stripe_subscription_id)
+                    except Exception:
+                        logger.exception(
+                            "failed to cancel stale stripe subscription: telegram_user_id=%s subscription_id=%s",
+                            subscription.telegram_user_id,
+                            subscription.stripe_subscription_id,
+                        )
+
+                subscription.status = "expired"
+                subscription.provider_status = subscription.provider_status or "expired_unpaid"
+                subscription.current_period_start = None
+                subscription.current_period_end = None
+                expired.append(self._snapshot(subscription))
+
+            return expired
 
     def _handle_event(self, session: Session, event) -> None:
         event_type = event["type"]
@@ -223,53 +298,85 @@ class StripeBillingService:
         logger.info("stripe event handler: type=%s", event_type)
 
         if event_type == "checkout.session.completed":
-            telegram_user_id = self._parse_telegram_user_id(payload.get("client_reference_id") or payload.get("metadata", {}).get("telegram_user_id"))
+            telegram_user_id = self._parse_telegram_user_id(
+                payload.get("client_reference_id") or payload.get("metadata", {}).get("telegram_user_id")
+            )
+            stripe_subscription_id = payload.get("subscription")
+            customer_id = payload.get("customer")
             if telegram_user_id is None:
                 return
 
-            user = self._ensure_user_row(session, telegram_user_id)
-            customer_id = payload.get("customer")
-            if customer_id:
-                user.stripe_customer_id = customer_id
+            self._ensure_user_row(session, telegram_user_id)
+            if stripe_subscription_id:
+                self._sync_subscription_from_stripe(
+                    session,
+                    telegram_user_id=telegram_user_id,
+                    stripe_subscription_id=stripe_subscription_id,
+                    customer_id=customer_id,
+                )
+                return
 
             subscription = self._ensure_subscription_row(session, telegram_user_id)
-            subscription.checkout_session_id = payload.get("id")
+            subscription.provider = "stripe"
+            subscription.provider_status = "checkout_completed"
+            subscription.status = "pending_activation"
             subscription.stripe_customer_id = customer_id
-            subscription.stripe_subscription_id = payload.get("subscription")
-            subscription.status = "checkout_completed"
+            subscription.checkout_session_id = payload.get("id")
             return
 
         if event_type.startswith("customer.subscription."):
             customer_id = payload.get("customer")
+            stripe_subscription_id = payload.get("id")
             telegram_user_id = self._parse_telegram_user_id(payload.get("metadata", {}).get("telegram_user_id"))
-            subscription = None
 
-            if telegram_user_id is not None:
-                self._ensure_user_row(session, telegram_user_id)
-                subscription = self._ensure_subscription_row(session, telegram_user_id)
-            elif customer_id:
-                subscription = session.scalar(
+            if telegram_user_id is None and customer_id:
+                existing = session.scalar(
                     select(UserSubscriptionModel).where(UserSubscriptionModel.stripe_customer_id == customer_id)
                 )
+                if existing is not None:
+                    telegram_user_id = existing.telegram_user_id
 
-            if subscription is None:
+            if telegram_user_id is None or not stripe_subscription_id:
                 return
 
-            subscription.stripe_customer_id = customer_id
-            subscription.stripe_subscription_id = payload.get("id")
-            subscription.stripe_price_id = self._extract_price_id(payload)
-            subscription.status = payload.get("status", "inactive")
+            self._ensure_user_row(session, telegram_user_id)
+            self._sync_subscription_from_stripe(
+                session,
+                telegram_user_id=telegram_user_id,
+                stripe_subscription_id=stripe_subscription_id,
+                customer_id=customer_id,
+            )
 
-            current_period_start = payload.get("current_period_start")
-            current_period_end = payload.get("current_period_end")
-            if current_period_start:
-                subscription.current_period_start = datetime.fromtimestamp(current_period_start, tz=timezone.utc)
-            else:
-                subscription.current_period_start = None
-            if current_period_end:
-                subscription.current_period_end = datetime.fromtimestamp(current_period_end, tz=timezone.utc)
-            else:
-                subscription.current_period_end = None
+    def _sync_subscription_from_stripe(
+        self,
+        session: Session,
+        telegram_user_id: int,
+        stripe_subscription_id: str,
+        customer_id: str | None = None,
+    ) -> None:
+        stripe_subscription = stripe.Subscription.retrieve(
+            stripe_subscription_id,
+            expand=["items.data.price"],
+        )
+        subscription = self._ensure_subscription_row(session, telegram_user_id)
+        subscription.provider = "stripe"
+        subscription.provider_status = stripe_subscription.get("status")
+        subscription.stripe_subscription_id = stripe_subscription.get("id")
+        subscription.stripe_customer_id = customer_id or stripe_subscription.get("customer")
+        subscription.stripe_price_id = self._extract_price_id(stripe_subscription)
+        subscription.current_period_start = self._ts_to_dt(stripe_subscription.get("current_period_start"))
+        subscription.current_period_end = self._ts_to_dt(stripe_subscription.get("current_period_end"))
+        subscription.status = self._map_provider_status(subscription.provider_status)
+
+        if subscription.status in ACTIVE_SUBSCRIPTION_STATUSES:
+            subscription.pending_since = None
+            subscription.last_pending_reminder_at = None
+        elif subscription.status in PENDING_SUBSCRIPTION_STATUSES:
+            subscription.pending_since = subscription.pending_since or datetime.now(timezone.utc)
+
+    def _retrieve_checkout_subscription(self, checkout_session_id: str) -> tuple[str | None, str | None]:
+        checkout_session = stripe.checkout.Session.retrieve(checkout_session_id)
+        return checkout_session.get("subscription"), checkout_session.get("customer")
 
     def _ensure_user_row(
         self,
@@ -301,11 +408,26 @@ class StripeBillingService:
         if subscription is None:
             subscription = UserSubscriptionModel(
                 telegram_user_id=telegram_user_id,
+                provider="stripe",
                 status="inactive",
             )
             session.add(subscription)
             session.flush()
         return subscription
+
+    @staticmethod
+    def _map_provider_status(provider_status: str | None) -> str:
+        if provider_status in {"active", "trialing"}:
+            return "active"
+        if provider_status == "incomplete":
+            return "pending_activation"
+        if provider_status in {"past_due", "unpaid", "paused"}:
+            return "payment_problem"
+        if provider_status == "canceled":
+            return "canceled"
+        if provider_status == "incomplete_expired":
+            return "expired"
+        return "inactive"
 
     @staticmethod
     def _extract_price_id(payload) -> str | None:
@@ -315,6 +437,12 @@ class StripeBillingService:
         return None
 
     @staticmethod
+    def _ts_to_dt(value: int | None) -> datetime | None:
+        if value is None:
+            return None
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+
+    @staticmethod
     def _parse_telegram_user_id(value: str | None) -> int | None:
         if value is None:
             return None
@@ -322,3 +450,20 @@ class StripeBillingService:
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _snapshot(subscription: UserSubscriptionModel) -> SubscriptionSnapshot:
+        return SubscriptionSnapshot(
+            telegram_user_id=subscription.telegram_user_id,
+            status=subscription.status,
+            provider=subscription.provider,
+            provider_status=subscription.provider_status,
+            current_period_start=subscription.current_period_start,
+            current_period_end=subscription.current_period_end,
+            checkout_session_id=subscription.checkout_session_id,
+            stripe_customer_id=subscription.stripe_customer_id,
+            stripe_subscription_id=subscription.stripe_subscription_id,
+            requested_chat_id=subscription.requested_chat_id,
+            pending_since=subscription.pending_since,
+            cancel_requested_at=subscription.cancel_requested_at,
+        )

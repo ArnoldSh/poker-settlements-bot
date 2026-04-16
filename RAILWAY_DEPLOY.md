@@ -46,6 +46,7 @@ Optional:
 
 - `HOST=0.0.0.0`
 - `PORT` is usually injected by Railway automatically
+- `ADMIN_TELEGRAM_CHAT_ID` for manual subscription cancellation notifications
 
 ## 4. Database Migration
 
@@ -81,6 +82,8 @@ Recommended subscribed events:
 - `customer.subscription.created`
 - `customer.subscription.updated`
 - `customer.subscription.deleted`
+
+The service also supports API refresh of subscription state, so delayed or out-of-order webhooks do not leave the local billing model stale.
 
 ## 7. Healthcheck
 
