@@ -94,19 +94,18 @@ class DatabaseStore:
             session.refresh(game_row)
             return self._to_session(game_row)
 
-    def count_finalized_games_for_chat(self, chat_id: int) -> int:
+    def count_started_games_for_chat(self, chat_id: int) -> int:
         with self.session_factory() as session:
             return int(
                 session.scalar(
                     select(func.count(ChatGameModel.id)).where(
                         ChatGameModel.chat_id == chat_id,
-                        ChatGameModel.status == "closed",
                     )
                 )
                 or 0
             )
 
-    def count_finalized_games_for_user_in_period(
+    def count_started_games_for_user_in_period(
         self,
         telegram_user_id: int,
         period_start: datetime | None,
@@ -119,10 +118,9 @@ class DatabaseStore:
             return int(
                 session.scalar(
                     select(func.count(ChatGameModel.id)).where(
-                        ChatGameModel.status == "closed",
-                        ChatGameModel.finalized_by_telegram_user_id == telegram_user_id,
-                        ChatGameModel.finalized_at >= period_start,
-                        ChatGameModel.finalized_at <= period_end,
+                        ChatGameModel.created_by_telegram_user_id == telegram_user_id,
+                        ChatGameModel.created_at >= period_start,
+                        ChatGameModel.created_at <= period_end,
                     )
                 )
                 or 0

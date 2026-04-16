@@ -77,28 +77,58 @@ def _apply_player_line(session: GameSession, name: str, buyin, out) -> None:
     _validate_player_limit(session)
 
 
-def _can_finalize_new_game(update: Update, session: GameSession) -> tuple[bool, str | None]:
+def _remaining_free_games(chat_id: int) -> int:
+    services = get_services()
+    started_games_for_chat = services.store.count_started_games_for_chat(chat_id)
+    return max(0, services.settings.free_trial_games_per_chat - started_games_for_chat)
+
+
+def _remaining_subscription_games(user_id: int | None, subscription) -> int:
+    services = get_services()
+    if user_id is None or not subscription.is_active:
+        return 0
+
+    started_games_in_period = services.store.count_started_games_for_user_in_period(
+        telegram_user_id=user_id,
+        period_start=subscription.current_period_start,
+        period_end=subscription.current_period_end,
+    )
+    return max(0, services.settings.max_subscription_games_per_period - started_games_in_period)
+
+
+def _limits_text(update: Update, subscription=None) -> str:
+    user_id = _telegram_user_id(update)
+    free_games_left = _remaining_free_games(_chat_id(update))
+    subscription_games_left = _remaining_subscription_games(user_id, subscription) if subscription is not None else 0
+    return tr(
+        "limits_status",
+        free_games_left=free_games_left,
+        subscription_games_left=subscription_games_left,
+    )
+
+
+def _can_start_new_game(update: Update) -> tuple[bool, str | None]:
     services = get_services()
     chat_id = _chat_id(update)
-    finalized_games_for_chat = services.store.count_finalized_games_for_chat(chat_id)
-    if finalized_games_for_chat < services.settings.free_trial_games_per_chat:
+    started_games_for_chat = services.store.count_started_games_for_chat(chat_id)
+    if started_games_for_chat < services.settings.free_trial_games_per_chat:
         return True, None
 
     user_id = _telegram_user_id(update)
     if user_id is None:
-        return False, tr("subscription_required_new_calc")
+        return False, "\n\n".join([tr("subscription_required_new_game"), _limits_text(update)])
 
     subscription = services.billing.refresh_subscription(user_id) if services.billing.enabled else services.billing.get_subscription(user_id)
     if not subscription.is_active:
-        return False, tr("subscription_required_new_calc")
+        return False, "\n\n".join([tr("subscription_required_new_game"), _limits_text(update, subscription)])
 
-    games_in_period = services.store.count_finalized_games_for_user_in_period(
+    games_in_period = services.store.count_started_games_for_user_in_period(
         telegram_user_id=user_id,
         period_start=subscription.current_period_start,
         period_end=subscription.current_period_end,
     )
     if games_in_period >= services.settings.max_subscription_games_per_period:
-        return False, tr("subscription_period_limit_reached")
+        return False, "\n\n".join([tr("subscription_period_limit_reached"), _limits_text(update, subscription)])
 
     return True, None
 
@@ -141,35 +171,47 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def subscription_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     services = get_services()
+    message = _message(update)
     user_id = _sync_user(update)
     if user_id is None:
-        await _message(update).reply_text(tr("subscription_status_inactive"))
+        await message.reply_text(
+            "\n\n".join([tr("subscription_status_inactive"), _limits_text(update)]),
+        )
         return
 
     subscription = services.billing.refresh_subscription(user_id) if services.billing.enabled else services.billing.get_subscription(user_id)
     if subscription.is_active:
         if subscription.current_period_end is not None:
-            await _message(update).reply_text(
-                tr("subscription_status_active", date=subscription.current_period_end.strftime("%Y-%m-%d %H:%M UTC"))
+            await message.reply_text(
+                "\n\n".join(
+                    [
+                        tr("subscription_status_active", date=subscription.current_period_end.strftime("%Y-%m-%d %H:%M UTC")),
+                        _limits_text(update, subscription),
+                    ]
+                )
             )
         else:
-            await _message(update).reply_text(tr("subscription_status_active_open"))
+            await message.reply_text(
+                "\n\n".join([tr("subscription_status_active_open"), _limits_text(update, subscription)])
+            )
         return
 
     if subscription.status == "pending_activation":
-        await _message(update).reply_text(tr("subscription_status_pending"))
+        await message.reply_text("\n\n".join([tr("subscription_status_pending"), _limits_text(update, subscription)]))
         return
     if subscription.status == "payment_problem":
-        await _message(update).reply_text(tr("subscription_status_payment_problem"))
+        await message.reply_text(
+            "\n\n".join([tr("subscription_status_payment_problem"), _limits_text(update, subscription)])
+        )
         return
     if subscription.status == "canceled":
-        await _message(update).reply_text(tr("subscription_status_canceled"))
+        await message.reply_text("\n\n".join([tr("subscription_status_canceled"), _limits_text(update, subscription)]))
         return
     if subscription.status == "expired":
-        await _message(update).reply_text(tr("subscription_status_expired"))
+        await message.reply_text("\n\n".join([tr("subscription_status_expired"), _limits_text(update, subscription)]))
         return
 
-    await _message(update).reply_text(tr("subscription_status_inactive"))
+    await message.reply_text("\n\n".join([tr("subscription_status_inactive"), _limits_text(update, subscription)]))
 
 
 async def cancel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -210,10 +252,24 @@ async def cancel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def newgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    _sync_user(update)
+    user_id = _sync_user(update)
     services = get_services()
+    can_start, reason = _can_start_new_game(update)
+    if not can_start:
+        await _message(update).reply_text(reason or tr("subscription_required_new_game"))
+        return
+
     services.store.start_new_game(_chat_id(update), created_by_telegram_user_id=_telegram_user_id(update))
-    await _message(update).reply_text(tr("newgame_done"))
+    subscription = None
+    if user_id is not None:
+        subscription = (
+            services.billing.refresh_subscription(user_id)
+            if services.billing.enabled
+            else services.billing.get_subscription(user_id)
+        )
+    await _message(update).reply_text(
+        "\n\n".join([tr("newgame_done"), _limits_text(update, subscription)]),
+    )
 
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -338,12 +394,6 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not session.game.players:
         await message.reply_text(tr("calc_no_data"))
         return
-
-    if session.is_open:
-        can_finalize, reason = _can_finalize_new_game(update, session)
-        if not can_finalize:
-            await message.reply_text(reason or tr("subscription_required_new_calc"))
-            return
 
     balance_error = session.game.check_balance()
     if balance_error:

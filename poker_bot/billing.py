@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -196,8 +195,9 @@ class StripeBillingService:
                 StripeEventModel(
                     event_id=event_id,
                     event_type=event["type"],
+                    object_type=self._extract_object_type(event["type"]),
+                    object_reference_id=self._extract_object_reference_id(event),
                     processing_status="processed",
-                    payload_json=json.dumps(event, default=str),
                 )
             )
             self._handle_event(session, event)
@@ -449,6 +449,22 @@ class StripeBillingService:
         try:
             return int(value)
         except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _extract_object_type(event_type: str | None) -> str | None:
+        if not event_type:
+            return None
+        parts = event_type.split(".")
+        if len(parts) < 2:
+            return event_type
+        return ".".join(parts[:-1])
+
+    @staticmethod
+    def _extract_object_reference_id(event) -> str | None:
+        try:
+            return event["data"]["object"].get("id")
+        except (KeyError, TypeError, AttributeError):
             return None
 
     @staticmethod

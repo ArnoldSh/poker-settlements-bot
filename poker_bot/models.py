@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import sqlalchemy as sa
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -92,7 +92,8 @@ class StripeEventModel(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     event_type: Mapped[str] = mapped_column(String(255))
+    object_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    object_reference_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     processing_status: Mapped[str] = mapped_column(String(64), default="processed")
-    payload_json: Mapped[str] = mapped_column(Text())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
