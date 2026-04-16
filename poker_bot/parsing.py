@@ -6,17 +6,20 @@ from decimal import Decimal
 from poker_bot.formatting import decimal_amount
 from poker_bot.i18n import tr
 
-NAME_PATTERN = re.compile(r"^@?[^\s,]+$")
+MAX_PLAYER_NAME_LENGTH = 64
+TAG_PATTERN = re.compile(r"^@?[A-Za-z0-9_]+$")
 
 
 def normalize_name(name: str) -> str:
     normalized = name.strip()
     if not normalized:
         raise ValueError(tr("empty_name"))
-    if not NAME_PATTERN.match(normalized):
-        raise ValueError(tr("parse_line_format"))
+    if not TAG_PATTERN.match(normalized):
+        raise ValueError(tr("invalid_player_tag"))
     if not normalized.startswith("@"):
         normalized = f"@{normalized}"
+    if len(normalized) > MAX_PLAYER_NAME_LENGTH:
+        raise ValueError(tr("invalid_player_tag"))
     return normalized
 
 
@@ -73,4 +76,3 @@ def parse_line(text: str) -> tuple[str, Decimal, Decimal]:
 
     buy_expr, out_expr = split_amounts(rest)
     return normalize_name(raw_name), parse_amount_expression(buy_expr), parse_amount_expression(out_expr)
-

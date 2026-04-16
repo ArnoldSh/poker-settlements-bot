@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from decimal import Decimal
 
-from poker_bot.parsing import parse_line
+from poker_bot.parsing import normalize_name, parse_line
 
 
 class ParseLineTests(unittest.TestCase):
@@ -25,7 +25,17 @@ class ParseLineTests(unittest.TestCase):
     def test_legacy_arrow_syntax_is_still_supported(self) -> None:
         self.assertEqual(parse_line("@ivan 100 -> 20"), ("@ivan", Decimal("100.00"), Decimal("20.00")))
 
+    def test_name_is_normalized_to_tag(self) -> None:
+        self.assertEqual(normalize_name("ivan_123"), "@ivan_123")
+
+    def test_name_rejects_non_tag_characters(self) -> None:
+        with self.assertRaises(ValueError):
+            normalize_name("@ivan-poker")
+
+    def test_name_rejects_more_than_64_characters(self) -> None:
+        with self.assertRaises(ValueError):
+            normalize_name("@" + "a" * 64)
+
 
 if __name__ == "__main__":
     unittest.main()
-

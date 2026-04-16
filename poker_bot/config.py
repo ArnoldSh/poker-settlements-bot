@@ -12,11 +12,13 @@ class Settings:
     port: int
     telegram_webhook_path: str
     telegram_webhook_secret_token: str | None
+    max_players_per_game: int
+    free_trial_games_per_chat: int
+    max_subscription_games_per_period: int
     stripe_secret_key: str | None
     stripe_webhook_secret: str | None
     stripe_price_id: str | None
     app_base_url: str | None
-    admin_secret: str | None
 
     @property
     def stripe_enabled(self) -> bool:
@@ -55,10 +57,12 @@ def load_settings() -> Settings:
         port=int(os.environ.get("PORT", "8080")),
         telegram_webhook_path=os.environ.get("TELEGRAM_WEBHOOK_PATH", "/webhooks/telegram"),
         telegram_webhook_secret_token=os.environ.get("BOT_WEBHOOK_SECRET_TOKEN"),
+        max_players_per_game=int(os.environ.get("MAX_PLAYERS_PER_GAME", "10")),
+        free_trial_games_per_chat=int(os.environ.get("FREE_TRIAL_GAMES_PER_CHAT", "3")),
+        max_subscription_games_per_period=int(os.environ.get("MAX_SUBSCRIPTION_GAMES_PER_PERIOD", "100")),
         stripe_secret_key=os.environ.get("STRIPE_SECRET_KEY"),
         stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET"),
         stripe_price_id=os.environ.get("STRIPE_PRICE_ID"),
         app_base_url=_normalise_base_url(os.environ.get("APP_BASE_URL")),
-        admin_secret=os.environ.get("ADMIN_SECRET"),
     )
 

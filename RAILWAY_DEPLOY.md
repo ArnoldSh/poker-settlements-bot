@@ -24,12 +24,17 @@ Required:
 - `BOT_TOKEN`
 - `DATABASE_URL`
 - `APP_BASE_URL`
-- `ADMIN_SECRET`
 
 Telegram webhook:
 
 - `TELEGRAM_WEBHOOK_PATH=/webhooks/telegram`
 - `BOT_WEBHOOK_SECRET_TOKEN=<your telegram secret token>`
+
+Gameplay / monetization:
+
+- `MAX_PLAYERS_PER_GAME=10`
+- `FREE_TRIAL_GAMES_PER_CHAT=3`
+- `MAX_SUBSCRIPTION_GAMES_PER_PERIOD=100`
 
 Stripe:
 
@@ -85,22 +90,7 @@ Railway can use:
 /healthz
 ```
 
-## 8. Debug / Admin Endpoints
-
-All debug/admin endpoints require header:
-
-```text
-X-Admin-Secret: <ADMIN_SECRET>
-```
-
-Available endpoints:
-
-- `GET /debug/users/{telegram_user_id}`
-- `GET /debug/chats/{chat_id}`
-- `POST /admin/subscriptions/set`
-
-## 9. Notes
+## 8. Notes
 
 - Current schema is managed through Alembic.
-- `bot_v2.py` and `bot_v2_raw.py` are intentionally left in the repository as alternative experiments.
 - Main deployment entrypoint for Railway is `server.py`.

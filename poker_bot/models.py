@@ -33,8 +33,11 @@ class ChatGameModel(Base):
     __tablename__ = "chat_games"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    chat_id: Mapped[int] = mapped_column(sa.BigInteger(), unique=True, index=True)
+    chat_id: Mapped[int] = mapped_column(sa.BigInteger(), index=True)
+    status: Mapped[str] = mapped_column(String(32), default="open", index=True)
     created_by_telegram_user_id: Mapped[int | None] = mapped_column(sa.BigInteger(), nullable=True)
+    finalized_by_telegram_user_id: Mapped[int | None] = mapped_column(sa.BigInteger(), nullable=True)
+    finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
@@ -68,6 +71,7 @@ class UserSubscriptionModel(Base):
     stripe_price_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     checkout_session_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(64), default="inactive")
+    current_period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     current_period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

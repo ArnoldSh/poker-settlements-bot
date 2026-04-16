@@ -11,6 +11,7 @@ from poker_bot.i18n import tr
 from poker_bot.parsing import normalize_name, parse_line
 from poker_bot.rendering import render_table, render_transfers
 from poker_bot.runtime import get_services
+from poker_bot.store import GameSession
 
 
 def _chat_id(update: Update) -> int:
@@ -48,18 +49,57 @@ def _sync_user(update: Update) -> int | None:
     return user.id
 
 
-async def _require_subscription(update: Update) -> bool:
+def _require_existing_game(session: GameSession | None) -> GameSession:
+    if session is None:
+        raise ValueError(tr("no_active_game"))
+    return session
+
+
+def _require_open_game(session: GameSession | None) -> GameSession:
+    session = _require_existing_game(session)
+    if session.is_closed:
+        raise ValueError(tr("game_closed"))
+    return session
+
+
+def _validate_player_limit(session: GameSession) -> None:
+    limit = get_services().settings.max_players_per_game
+    if len(session.game.players) > limit:
+        raise ValueError(tr("player_limit_reached", limit=limit))
+
+
+def _apply_player_line(session: GameSession, name: str, buyin, out) -> None:
+    limit = get_services().settings.max_players_per_game
+    if name not in session.game.players and len(session.game.players) >= limit:
+        raise ValueError(tr("player_limit_reached", limit=limit))
+    session.game.add_or_update(name, buyin, out)
+    _validate_player_limit(session)
+
+
+def _can_finalize_new_game(update: Update, session: GameSession) -> tuple[bool, str | None]:
     services = get_services()
-    user_id = _sync_user(update)
+    chat_id = _chat_id(update)
+    finalized_games_for_chat = services.store.count_finalized_games_for_chat(chat_id)
+    if finalized_games_for_chat < services.settings.free_trial_games_per_chat:
+        return True, None
+
+    user_id = _telegram_user_id(update)
     if user_id is None:
-        await _message(update).reply_text(tr("subscription_required"))
-        return False
+        return False, tr("subscription_required_new_calc")
 
-    if services.billing.has_active_subscription(user_id):
-        return True
+    subscription = services.billing.get_subscription(user_id)
+    if not subscription.is_active:
+        return False, tr("subscription_required_new_calc")
 
-    await _message(update).reply_text(tr("subscription_required"))
-    return False
+    games_in_period = services.store.count_finalized_games_for_user_in_period(
+        telegram_user_id=user_id,
+        period_start=subscription.current_period_start,
+        period_end=subscription.current_period_end,
+    )
+    if games_in_period >= services.settings.max_subscription_games_per_period:
+        return False, tr("subscription_period_limit_reached")
+
+    return True, None
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -69,7 +109,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _sync_user(update)
-    await _message(update).reply_text(tr("help_text"), parse_mode=ParseMode.HTML)
+    await _message(update).reply_text(
+        tr(
+            "help_text",
+            subscription_games_limit=get_services().settings.max_subscription_games_per_period,
+        ),
+        parse_mode=ParseMode.HTML,
+    )
 
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -112,22 +158,22 @@ async def subscription_status(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def newgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _require_subscription(update):
-        return
-
+    _sync_user(update)
     services = get_services()
-    services.store.reset(_chat_id(update), created_by_telegram_user_id=_telegram_user_id(update))
+    services.store.start_new_game(_chat_id(update), created_by_telegram_user_id=_telegram_user_id(update))
     await _message(update).reply_text(tr("newgame_done"))
 
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _require_subscription(update):
-        return
-
+    _sync_user(update)
     services = get_services()
     message = _message(update)
-    chat_id = _chat_id(update)
-    game = services.store.get(chat_id)
+
+    try:
+        session = _require_open_game(services.store.get_latest(_chat_id(update)))
+    except Exception as exc:
+        await message.reply_text(tr("generic_error", error=exc))
+        return
 
     if not context.args:
         await message.reply_text(tr("add_usage"))
@@ -135,21 +181,23 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     try:
         name, buyin, out = parse_line(" ".join(context.args))
-        game.add_or_update(name, buyin, out)
-        services.store.save(chat_id, game, created_by_telegram_user_id=_telegram_user_id(update))
+        _apply_player_line(session, name, buyin, out)
+        services.store.save_players(session.id, session.game)
         await message.reply_text(tr("add_success", name=name, buyin=eur(buyin), out=eur(out)))
     except Exception as exc:
         await message.reply_text(tr("generic_error", error=exc))
 
 
 async def addblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _require_subscription(update):
-        return
-
+    _sync_user(update)
     services = get_services()
     message = _message(update)
-    chat_id = _chat_id(update)
-    game = services.store.get(chat_id)
+    try:
+        session = _require_open_game(services.store.get_latest(_chat_id(update)))
+    except Exception as exc:
+        await message.reply_text(tr("generic_error", error=exc))
+        return
+
     text = message.text or ""
     parts = text.split("\n", 1)
 
@@ -164,12 +212,12 @@ async def addblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             continue
         try:
             name, buyin, out = parse_line(raw_line)
-            game.add_or_update(name, buyin, out)
+            _apply_player_line(session, name, buyin, out)
             added.append(name)
         except Exception as exc:
             errors.append(f"{raw_line} -> {exc}")
 
-    services.store.save(chat_id, game, created_by_telegram_user_id=_telegram_user_id(update))
+    services.store.save_players(session.id, session.game)
 
     response_lines = [
         tr("addblock_added", players=", ".join(added)) if added else tr("addblock_added_empty")
@@ -181,47 +229,71 @@ async def addblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _require_subscription(update):
-        return
-
+    _sync_user(update)
     services = get_services()
     message = _message(update)
-    chat_id = _chat_id(update)
-    game = services.store.get(chat_id)
+    try:
+        session = _require_open_game(services.store.get_latest(_chat_id(update)))
+    except Exception as exc:
+        await message.reply_text(tr("generic_error", error=exc))
+        return
 
     if not context.args:
         await message.reply_text(tr("remove_usage"))
         return
 
-    if game.remove(normalize_name(context.args[0])):
-        services.store.save(chat_id, game, created_by_telegram_user_id=_telegram_user_id(update))
+    if session.game.remove(normalize_name(context.args[0])):
+        services.store.save_players(session.id, session.game)
         await message.reply_text(tr("remove_done"))
     else:
         await message.reply_text(tr("remove_missing"))
 
 
-async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _require_subscription(update):
+async def remove_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _sync_user(update)
+    services = get_services()
+    message = _message(update)
+    try:
+        session = _require_open_game(services.store.get_latest(_chat_id(update)))
+    except Exception as exc:
+        await message.reply_text(tr("generic_error", error=exc))
         return
 
+    session.game.players.clear()
+    services.store.save_players(session.id, session.game)
+    await message.reply_text(tr("remove_all_done"))
+
+
+async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _sync_user(update)
     services = get_services()
-    game = services.store.get(_chat_id(update))
-    await _message(update).reply_text(render_table(game), parse_mode=ParseMode.HTML)
+    session = services.store.get_latest(_chat_id(update))
+    if session is None:
+        await _message(update).reply_text(tr("no_active_game"))
+        return
+    await _message(update).reply_text(render_table(session.game), parse_mode=ParseMode.HTML)
 
 
 async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not await _require_subscription(update):
-        return
-
+    _sync_user(update)
     services = get_services()
     message = _message(update)
-    game = services.store.get(_chat_id(update))
+    session = services.store.get_latest(_chat_id(update))
 
-    if not game.players:
+    if session is None:
+        await message.reply_text(tr("no_active_game"))
+        return
+    if not session.game.players:
         await message.reply_text(tr("calc_no_data"))
         return
 
-    balance_error = game.check_balance()
+    if session.is_open:
+        can_finalize, reason = _can_finalize_new_game(update, session)
+        if not can_finalize:
+            await message.reply_text(reason or tr("subscription_required_new_calc"))
+            return
+
+    balance_error = session.game.check_balance()
     if balance_error:
         await message.reply_text(balance_error, parse_mode=ParseMode.HTML)
         return
@@ -233,7 +305,7 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if len(context.args) > 1:
             hub_name = normalize_name(context.args[1])
 
-    nets = game.nets()
+    nets = session.game.nets()
     highlights = build_highlights(nets)
 
     if mode == "hub":
@@ -242,6 +314,9 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     else:
         transfers = settle_direct(nets)
         header = tr("calc_mode_direct")
+
+    if session.is_open:
+        services.store.complete_game(session.id, finalized_by_telegram_user_id=_telegram_user_id(update))
 
     if not transfers:
         await message.reply_text(tr("calc_no_transfers", highlights=highlights), parse_mode=ParseMode.HTML)
@@ -259,5 +334,6 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("add", add))
     application.add_handler(CommandHandler("addblock", addblock))
     application.add_handler(CommandHandler("remove", remove))
+    application.add_handler(CommandHandler("removeAll", remove_all))
     application.add_handler(CommandHandler("list", list_cmd))
     application.add_handler(CommandHandler("calc", calc))

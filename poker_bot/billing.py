@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 class SubscriptionSnapshot:
     telegram_user_id: int
     status: str
+    current_period_start: datetime | None
     current_period_end: datetime | None
     checkout_session_id: str | None
     stripe_customer_id: str | None
@@ -78,6 +79,7 @@ class StripeBillingService:
                 return SubscriptionSnapshot(
                     telegram_user_id=telegram_user_id,
                     status="inactive",
+                    current_period_start=None,
                     current_period_end=None,
                     checkout_session_id=None,
                     stripe_customer_id=None,
@@ -87,6 +89,7 @@ class StripeBillingService:
             return SubscriptionSnapshot(
                 telegram_user_id=telegram_user_id,
                 status=subscription.status,
+                current_period_start=subscription.current_period_start,
                 current_period_end=subscription.current_period_end,
                 checkout_session_id=subscription.checkout_session_id,
                 stripe_customer_id=subscription.stripe_customer_id,
@@ -172,6 +175,7 @@ class StripeBillingService:
             self._ensure_user_row(session, telegram_user_id)
             subscription = self._ensure_subscription_row(session, telegram_user_id)
             subscription.status = status
+            subscription.current_period_start = datetime.now(timezone.utc)
             subscription.current_period_end = (
                 datetime.now(timezone.utc) + timedelta(days=days) if days is not None else None
             )
@@ -200,6 +204,9 @@ class StripeBillingService:
                 if subscription is None
                 else {
                     "status": subscription.status,
+                    "current_period_start": None
+                    if subscription.current_period_start is None
+                    else subscription.current_period_start.isoformat(),
                     "current_period_end": None
                     if subscription.current_period_end is None
                     else subscription.current_period_end.isoformat(),
@@ -253,7 +260,12 @@ class StripeBillingService:
             subscription.stripe_price_id = self._extract_price_id(payload)
             subscription.status = payload.get("status", "inactive")
 
+            current_period_start = payload.get("current_period_start")
             current_period_end = payload.get("current_period_end")
+            if current_period_start:
+                subscription.current_period_start = datetime.fromtimestamp(current_period_start, tz=timezone.utc)
+            else:
+                subscription.current_period_start = None
             if current_period_end:
                 subscription.current_period_end = datetime.fromtimestamp(current_period_end, tz=timezone.utc)
             else:

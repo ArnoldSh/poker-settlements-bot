@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
 from telegram import Update
 from telegram.ext import ApplicationBuilder
 
@@ -25,11 +23,6 @@ settings = load_settings()
 engine = build_engine(settings.database_url)
 session_factory = build_session_factory(engine)
 telegram_app = ApplicationBuilder().token(settings.bot_token).build()
-
-
-def _admin_guard(admin_secret: str | None) -> None:
-    if not settings.admin_secret or admin_secret != settings.admin_secret:
-        raise HTTPException(status_code=401, detail=tr("admin_unauthorized"))
 
 
 @asynccontextmanager
@@ -55,12 +48,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Poker Settlements Bot", lifespan=lifespan)
-
-
-class SubscriptionGrantRequest(BaseModel):
-    telegram_user_id: int
-    status: str
-    days: int | None = None
 
 
 @app.get("/healthz")
@@ -111,36 +98,3 @@ async def billing_success() -> str:
 @app.get("/billing/cancel", response_class=HTMLResponse)
 async def billing_cancel() -> str:
     return f"<html><body><h1>{tr('billing_cancel_page')}</h1></body></html>"
-
-
-@app.get("/debug/users/{telegram_user_id}")
-async def debug_user(telegram_user_id: int, x_admin_secret: str | None = Header(default=None)) -> dict[str, object]:
-    _admin_guard(x_admin_secret)
-    return get_services().billing.debug_user_payload(telegram_user_id)
-
-
-@app.get("/debug/chats/{chat_id}")
-async def debug_chat(chat_id: int, x_admin_secret: str | None = Header(default=None)) -> dict[str, object]:
-    _admin_guard(x_admin_secret)
-    return get_services().store.debug_chat_payload(chat_id)
-
-
-@app.post("/admin/subscriptions/set")
-async def admin_set_subscription(
-    payload: SubscriptionGrantRequest,
-    x_admin_secret: str | None = Header(default=None),
-) -> dict[str, object]:
-    _admin_guard(x_admin_secret)
-    snapshot = get_services().billing.force_subscription(
-        telegram_user_id=payload.telegram_user_id,
-        status=payload.status,
-        days=payload.days,
-    )
-    return {
-        "telegram_user_id": snapshot.telegram_user_id,
-        "status": snapshot.status,
-        "current_period_end": None
-        if snapshot.current_period_end is None
-        else snapshot.current_period_end.isoformat(),
-        "updated_at": datetime.utcnow().isoformat() + "Z",
-    }
