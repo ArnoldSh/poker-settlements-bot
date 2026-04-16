@@ -82,6 +82,7 @@ Recommended subscribed events:
 - `customer.subscription.created`
 - `customer.subscription.updated`
 - `customer.subscription.deleted`
+- `charge.refunded`
 
 The service also supports API refresh of subscription state, so delayed or out-of-order webhooks do not leave the local billing model stale.
 

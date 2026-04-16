@@ -8,7 +8,7 @@ from poker_bot.commentary import build_highlights
 from poker_bot.domain import settle_direct, settle_hub
 from poker_bot.formatting import eur
 from poker_bot.i18n import tr
-from poker_bot.notifications import CancelRequestNotification
+from poker_bot.notifications import AdminRequestNotification
 from poker_bot.parsing import normalize_name, parse_line
 from poker_bot.rendering import render_table, render_transfers
 from poker_bot.runtime import get_services
@@ -235,10 +235,12 @@ async def cancel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE
     subscription = services.billing.mark_cancel_requested(
         telegram_user_id=user_id,
         requested_by_telegram_user_id=user_id,
+        source_chat_id=_chat_id(update),
     )
-    await services.admin_notifier.notify_cancel_request(
+    await services.admin_notifier.notify_request(
         context.bot,
-        CancelRequestNotification(
+        AdminRequestNotification(
+            request_kind="cancel",
             telegram_user_id=user_id,
             username=user.username,
             provider=subscription.provider,
@@ -249,6 +251,45 @@ async def cancel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE
         ),
     )
     await message.reply_text(tr("subscription_cancel_requested"))
+
+
+async def refund_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    services = get_services()
+    message = _message(update)
+    user = update.effective_user
+    user_id = _sync_user(update)
+    if user is None or user_id is None:
+        await message.reply_text(tr("subscription_refund_unavailable"))
+        return
+
+    subscription = services.billing.refresh_subscription(user_id) if services.billing.enabled else services.billing.get_subscription(user_id)
+    if subscription.status not in {"active", "pending_activation", "payment_problem", "canceled"}:
+        await message.reply_text(tr("subscription_refund_no_subscription"))
+        return
+
+    if not services.admin_notifier.enabled:
+        await message.reply_text(tr("subscription_refund_unavailable"))
+        return
+
+    subscription = services.billing.mark_refund_requested(
+        telegram_user_id=user_id,
+        requested_by_telegram_user_id=user_id,
+        source_chat_id=_chat_id(update),
+    )
+    await services.admin_notifier.notify_request(
+        context.bot,
+        AdminRequestNotification(
+            request_kind="refund",
+            telegram_user_id=user_id,
+            username=user.username,
+            provider=subscription.provider,
+            provider_subscription_id=subscription.stripe_subscription_id,
+            local_status=subscription.status,
+            provider_status=subscription.provider_status,
+            source_chat_id=_chat_id(update),
+        ),
+    )
+    await message.reply_text(tr("subscription_refund_requested"))
 
 
 async def newgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -430,9 +471,10 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_cmd))
-    application.add_handler(CommandHandler("subscribe", subscribe))
-    application.add_handler(CommandHandler("subscription", subscription_status))
-    application.add_handler(CommandHandler("cancel_subscription", cancel_subscription))
+    application.add_handler(CommandHandler("sub", subscribe))
+    application.add_handler(CommandHandler("sub_status", subscription_status))
+    application.add_handler(CommandHandler("sub_cancel", cancel_subscription))
+    application.add_handler(CommandHandler("sub_refund", refund_subscription))
     application.add_handler(CommandHandler("newgame", newgame))
     application.add_handler(CommandHandler("add", add))
     application.add_handler(CommandHandler("addblock", addblock))

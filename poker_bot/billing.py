@@ -9,7 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from poker_bot.config import Settings
+from poker_bot.i18n import tr
 from poker_bot.models import StripeEventModel, TelegramUserModel, UserSubscriptionModel
+from poker_bot.notifications import UserChatNotification
 
 ACTIVE_SUBSCRIPTION_STATUSES = {"active"}
 PENDING_SUBSCRIPTION_STATUSES = {"pending_activation"}
@@ -30,6 +32,9 @@ class SubscriptionSnapshot:
     requested_chat_id: int | None
     pending_since: datetime | None
     cancel_requested_at: datetime | None
+    cancel_requested_chat_id: int | None
+    refund_requested_at: datetime | None
+    refund_requested_chat_id: int | None
 
     @property
     def is_active(self) -> bool:
@@ -93,6 +98,9 @@ class StripeBillingService:
                     requested_chat_id=None,
                     pending_since=None,
                     cancel_requested_at=None,
+                    cancel_requested_chat_id=None,
+                    refund_requested_at=None,
+                    refund_requested_chat_id=None,
                 )
 
             return self._snapshot(subscription)
@@ -177,7 +185,13 @@ class StripeBillingService:
 
             return checkout_session["url"]
 
-    def process_webhook(self, payload: bytes, signature: str | None) -> dict[str, str]:
+    @dataclass(frozen=True)
+    class WebhookProcessingResult:
+        event_id: str
+        status: str
+        notifications: list[UserChatNotification]
+
+    def process_webhook(self, payload: bytes, signature: str | None) -> WebhookProcessingResult:
         if not self.settings.stripe_webhook_secret:
             raise RuntimeError("STRIPE_WEBHOOK_SECRET is required to process Stripe webhooks.")
 
@@ -189,7 +203,7 @@ class StripeBillingService:
             existing = session.scalar(select(StripeEventModel).where(StripeEventModel.event_id == event_id))
             if existing is not None:
                 logger.info("stripe webhook skipped: duplicate event_id=%s", event_id)
-                return {"event_id": event_id, "status": "already_processed"}
+                return self.WebhookProcessingResult(event_id=event_id, status="already_processed", notifications=[])
 
             session.add(
                 StripeEventModel(
@@ -200,20 +214,36 @@ class StripeBillingService:
                     processing_status="processed",
                 )
             )
-            self._handle_event(session, event)
+            notifications = self._handle_event(session, event)
 
         logger.info("stripe webhook processed: event_id=%s", event_id)
-        return {"event_id": event_id, "status": "processed"}
+        return self.WebhookProcessingResult(event_id=event_id, status="processed", notifications=notifications)
 
     def mark_cancel_requested(
         self,
         telegram_user_id: int,
         requested_by_telegram_user_id: int,
+        source_chat_id: int | None,
     ) -> SubscriptionSnapshot:
         with self.session_factory.begin() as session:
             subscription = self._ensure_subscription_row(session, telegram_user_id)
             subscription.cancel_requested_at = datetime.now(timezone.utc)
             subscription.cancel_requested_by_telegram_user_id = requested_by_telegram_user_id
+            subscription.cancel_requested_chat_id = source_chat_id
+
+        return self.get_subscription(telegram_user_id)
+
+    def mark_refund_requested(
+        self,
+        telegram_user_id: int,
+        requested_by_telegram_user_id: int,
+        source_chat_id: int | None,
+    ) -> SubscriptionSnapshot:
+        with self.session_factory.begin() as session:
+            subscription = self._ensure_subscription_row(session, telegram_user_id)
+            subscription.refund_requested_at = datetime.now(timezone.utc)
+            subscription.refund_requested_by_telegram_user_id = requested_by_telegram_user_id
+            subscription.refund_requested_chat_id = source_chat_id
 
         return self.get_subscription(telegram_user_id)
 
@@ -292,7 +322,7 @@ class StripeBillingService:
 
             return expired
 
-    def _handle_event(self, session: Session, event) -> None:
+    def _handle_event(self, session: Session, event) -> list[UserChatNotification]:
         event_type = event["type"]
         payload = event["data"]["object"]
         logger.info("stripe event handler: type=%s", event_type)
@@ -304,17 +334,18 @@ class StripeBillingService:
             stripe_subscription_id = payload.get("subscription")
             customer_id = payload.get("customer")
             if telegram_user_id is None:
-                return
+                return []
 
             self._ensure_user_row(session, telegram_user_id)
             if stripe_subscription_id:
-                self._sync_subscription_from_stripe(
+                previous_snapshot = self._snapshot(self._ensure_subscription_row(session, telegram_user_id))
+                subscription = self._sync_subscription_from_stripe(
                     session,
                     telegram_user_id=telegram_user_id,
                     stripe_subscription_id=stripe_subscription_id,
                     customer_id=customer_id,
                 )
-                return
+                return self._build_subscription_notifications(previous_snapshot, subscription, event_type)
 
             subscription = self._ensure_subscription_row(session, telegram_user_id)
             subscription.provider = "stripe"
@@ -322,7 +353,7 @@ class StripeBillingService:
             subscription.status = "pending_activation"
             subscription.stripe_customer_id = customer_id
             subscription.checkout_session_id = payload.get("id")
-            return
+            return []
 
         if event_type.startswith("customer.subscription."):
             customer_id = payload.get("customer")
@@ -337,15 +368,35 @@ class StripeBillingService:
                     telegram_user_id = existing.telegram_user_id
 
             if telegram_user_id is None or not stripe_subscription_id:
-                return
+                return []
 
             self._ensure_user_row(session, telegram_user_id)
-            self._sync_subscription_from_stripe(
+            previous_snapshot = self._snapshot(self._ensure_subscription_row(session, telegram_user_id))
+            subscription = self._sync_subscription_from_stripe(
                 session,
                 telegram_user_id=telegram_user_id,
                 stripe_subscription_id=stripe_subscription_id,
                 customer_id=customer_id,
             )
+            return self._build_subscription_notifications(previous_snapshot, subscription, event_type)
+
+        if event_type == "charge.refunded":
+            customer_id = payload.get("customer")
+            if not customer_id:
+                return []
+
+            subscription = session.scalar(
+                select(UserSubscriptionModel).where(UserSubscriptionModel.stripe_customer_id == customer_id)
+            )
+            if subscription is None:
+                return []
+            snapshot = self._snapshot(subscription)
+            chat_id = snapshot.refund_requested_chat_id or snapshot.requested_chat_id
+            if chat_id is None:
+                return []
+            return [UserChatNotification(chat_id=chat_id, text=tr("subscription_event_refunded"))]
+
+        return []
 
     def _sync_subscription_from_stripe(
         self,
@@ -353,7 +404,7 @@ class StripeBillingService:
         telegram_user_id: int,
         stripe_subscription_id: str,
         customer_id: str | None = None,
-    ) -> None:
+    ) -> SubscriptionSnapshot:
         stripe_subscription = stripe.Subscription.retrieve(
             stripe_subscription_id,
             expand=["items.data.price"],
@@ -373,6 +424,7 @@ class StripeBillingService:
             subscription.last_pending_reminder_at = None
         elif subscription.status in PENDING_SUBSCRIPTION_STATUSES:
             subscription.pending_since = subscription.pending_since or datetime.now(timezone.utc)
+        return self._snapshot(subscription)
 
     def _retrieve_checkout_subscription(self, checkout_session_id: str) -> tuple[str | None, str | None]:
         checkout_session = stripe.checkout.Session.retrieve(checkout_session_id)
@@ -482,4 +534,56 @@ class StripeBillingService:
             requested_chat_id=subscription.requested_chat_id,
             pending_since=subscription.pending_since,
             cancel_requested_at=subscription.cancel_requested_at,
+            cancel_requested_chat_id=subscription.cancel_requested_chat_id,
+            refund_requested_at=subscription.refund_requested_at,
+            refund_requested_chat_id=subscription.refund_requested_chat_id,
         )
+
+    def _build_subscription_notifications(
+        self,
+        previous: SubscriptionSnapshot,
+        current: SubscriptionSnapshot,
+        event_type: str,
+    ) -> list[UserChatNotification]:
+        chat_id = current.requested_chat_id
+        if event_type == "customer.subscription.deleted":
+            chat_id = current.cancel_requested_chat_id or current.requested_chat_id
+        if chat_id is None:
+            return []
+
+        if event_type == "customer.subscription.created":
+            if current.status == "pending_activation":
+                return [UserChatNotification(chat_id=chat_id, text=tr("subscription_event_started_pending"))]
+            if current.status == "active":
+                return [
+                    UserChatNotification(
+                        chat_id=chat_id,
+                        text=tr(
+                            "subscription_event_paid",
+                            date=self._format_period_end(current.current_period_end),
+                        ),
+                    )
+                ]
+
+        if event_type == "customer.subscription.updated":
+            if previous.status != "active" and current.status == "active":
+                return [
+                    UserChatNotification(
+                        chat_id=chat_id,
+                        text=tr(
+                            "subscription_event_paid",
+                            date=self._format_period_end(current.current_period_end),
+                        ),
+                    )
+                ]
+
+        if event_type == "customer.subscription.deleted":
+            return [UserChatNotification(chat_id=chat_id, text=tr("subscription_event_canceled"))]
+
+        return []
+
+    @staticmethod
+    def _format_period_end(value: datetime | None) -> str:
+        if value is None:
+            return "без даты окончания"
+        return value.strftime("%Y-%m-%d %H:%M UTC")

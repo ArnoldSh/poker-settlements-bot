@@ -45,17 +45,18 @@ RU_CATALOG = Catalog(
         "start_text": (
             "Привет! Я считаю взаиморасчеты по итогам игры.\n"
             "В каждом чате доступны 3 бесплатные игры через /newgame.\n"
-            "После этого для создания новых игр нужна подписка пользователя через /subscribe.\n"
-            "Справка: /help, статус подписки: /subscription."
+            "После этого для создания новых игр нужна подписка пользователя через /sub.\n"
+            "Справка: /help, статус подписки: /sub_status."
         ),
         "help_text": (
             "<b>Бот расчета взаиморасчетов для покера</b>\n\n"
             "Команды:\n"
             "/start - краткая справка\n"
             "/help - полная справка\n"
-            "/subscribe - получить ссылку на оплату подписки\n"
-            "/subscription - статус вашей подписки\n"
-            "/cancel_subscription - запросить ручную отмену подписки\n"
+            "/sub - получить ссылку на оплату подписки\n"
+            "/sub_status - статус вашей подписки\n"
+            "/sub_cancel - запросить ручную отмену подписки\n"
+            "/sub_refund - запросить ручной рефанд\n"
             "/newgame - начать новую игру в этом чате\n"
             "/add &lt;строка&gt; - добавить или обновить игрока\n"
             "/addblock - добавить несколько игроков блоком\n"
@@ -82,7 +83,7 @@ RU_CATALOG = Catalog(
         ),
         "subscription_required_new_game": (
             "Бесплатный лимит для этого чата исчерпан. Чтобы создать новую игру, нужна подписка. "
-            "Используйте /subscribe."
+            "Используйте /sub."
         ),
         "subscription_period_limit_reached": (
             "Лимит новых игр по вашей подписке за текущий период исчерпан. "
@@ -98,20 +99,21 @@ RU_CATALOG = Catalog(
             "Подписка создана, но оплата еще не завершена. Завершите оплату по вашей ссылке Stripe."
         ),
         "subscription_status_payment_problem": (
-            "У подписки есть проблема с оплатой. Проверьте оплату в Stripe или оформите подписку заново через /subscribe."
+            "У подписки есть проблема с оплатой. Проверьте оплату в Stripe или оформите подписку заново через /sub."
         ),
         "subscription_status_canceled": "Подписка отменена.",
         "subscription_status_expired": "Подписка истекла.",
-        "subscription_status_inactive": "Подписка сейчас неактивна. Используйте /subscribe.",
+        "subscription_status_inactive": "Подписка сейчас неактивна. Используйте /sub.",
         "subscription_checkout_unavailable": "Оплата пока не настроена. Проверьте конфигурацию Stripe.",
         "subscription_checkout_created": "Оформить подписку можно по ссылке:\n{url}",
-        "subscription_cancel_requested": (
-            "Запрос на ручную отмену подписки отправлен администратору. Мы свяжемся отдельно по возврату, если он нужен."
-        ),
+        "subscription_cancel_requested": "Запрос на ручную отмену подписки отправлен администратору.",
         "subscription_cancel_unavailable": (
             "Ручная отмена подписки пока не настроена. Попробуйте позже или свяжитесь с администратором."
         ),
         "subscription_cancel_no_subscription": "Активной или ожидающей подписки не найдено.",
+        "subscription_refund_requested": "Запрос на рефанд отправлен администратору. Ответ придет отдельно в Telegram.",
+        "subscription_refund_unavailable": "Рефанд пока нельзя запросить через бота. Попробуйте позже.",
+        "subscription_refund_no_subscription": "Подходящая подписка для запроса рефанда не найдена.",
         "newgame_done": "Новая игра создана. Теперь можно добавлять игроков.",
         "no_active_game": "Нет текущей игры. Начните новую через /newgame.",
         "game_closed": "Эта игра уже закрыта. Чтобы начать новую, используйте /newgame.",
@@ -159,8 +161,11 @@ RU_CATALOG = Catalog(
         "highlights_plus": "плюс",
         "highlights_minus": "минус",
         "highlights_zero_direction": "ноль",
-        "billing_success_page": "Оплата прошла успешно. Можно вернуться в Telegram и проверить /subscription.",
-        "billing_cancel_page": "Оплата отменена. Можно вернуться в Telegram и попробовать позже.",
+        "subscription_event_started_pending": "Подписка создана. Ждем завершения оплаты.",
+        "subscription_event_paid": "Оплата прошла успешно. Подписка активна до {date}.",
+        "subscription_event_canceled": "Подписка отменена.",
+        "subscription_event_refunded": "Рефанд выполнен успешно.",
+        "billing_return_to_telegram_page": "Можно вернуться в Telegram. Дальнейшие уведомления придут в чат.",
     },
     commentary=CommentaryCatalog(
         winner_big=(
