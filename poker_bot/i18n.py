@@ -21,12 +21,9 @@ class Catalog:
 RU_CATALOG = Catalog(
     locale="ru",
     messages={
-        "missing_bot_token": "Установите переменную окружения BOT_TOKEN с токеном бота от @BotFather.",
-        "missing_webhook_url": "Установите переменную окружения BOT_WEBHOOK_URL с публичным URL вебхука.",
         "missing_message": "Нужен текст сообщения, чтобы я понял команду.",
         "missing_chat": "Не удалось определить чат для этой команды.",
         "webhook_secret_invalid": "Неверный secret token вебхука.",
-        "healthcheck_ok": "ok",
         "empty_name": "Пустое имя игрока.",
         "parse_line_format": (
             "Строка не распознана. Форматы: "
@@ -43,15 +40,16 @@ RU_CATALOG = Catalog(
         "hub_not_found": "Указанный hub не найден среди игроков.",
         "start_text": (
             "Привет! Я считаю взаиморасчеты по итогам игры.\n"
-            "Добавляйте игроков командами /add или /addblock, "
-            "потом используйте /calc direct или /calc hub.\n"
-            "Текущую таблицу можно посмотреть через /list, "
-            "а начать заново через /newgame."
+            "Игровые команды доступны по подписке. Для оформления используйте /subscribe.\n"
+            "Справка: /help, статус подписки: /subscription."
         ),
         "help_text": (
             "<b>Бот расчета взаиморасчетов для покера</b>\n\n"
             "Команды:\n"
             "/start — краткая справка\n"
+            "/help — полная справка\n"
+            "/subscribe — получить ссылку на оплату подписки\n"
+            "/subscription — статус вашей подписки\n"
             "/newgame — очистить текущую игру в этом чате\n"
             "/add &lt;строка&gt; — добавить или обновить игрока\n"
             "/addblock — добавить несколько игроков блоком\n"
@@ -68,6 +66,12 @@ RU_CATALOG = Catalog(
             "• суммы можно писать через '+'\n"
             "• имена автоматически приводятся к формату @username"
         ),
+        "subscription_required": "Для этой команды нужна активная подписка. Используйте /subscribe.",
+        "subscription_status_active": "Подписка активна до {date}.",
+        "subscription_status_active_open": "Подписка активна.",
+        "subscription_status_inactive": "Подписка сейчас неактивна. Используйте /subscribe.",
+        "subscription_checkout_unavailable": "Оплата пока не настроена. Проверьте конфигурацию Stripe.",
+        "subscription_checkout_created": "Оформить подписку можно по ссылке:\n{url}",
         "newgame_done": "Новая игра создана. Вводите игроков через /add или /addblock.",
         "add_usage": (
             "Использование: /add @user 100 или /add @user 100, 40 "
@@ -111,6 +115,9 @@ RU_CATALOG = Catalog(
         "highlights_plus": "плюс",
         "highlights_minus": "минус",
         "highlights_zero_direction": "ноль",
+        "billing_success_page": "Оплата прошла успешно. Можно вернуться в Telegram и проверить /subscription.",
+        "billing_cancel_page": "Оплата отменена. Можно вернуться в Telegram и попробовать позже.",
+        "admin_unauthorized": "Неверный admin secret.",
     },
     commentary=CommentaryCatalog(
         winner_big=(
