@@ -23,6 +23,22 @@ class Settings:
         return bool(self.stripe_secret_key and self.stripe_price_id and self.app_base_url)
 
 
+def _normalise_base_url(url: str | None) -> str | None:
+    """Ensure the base URL carries an explicit https:// scheme.
+
+    Railway's RAILWAY_PUBLIC_DOMAIN variable resolves to a bare domain
+    (e.g. ``poker-bot.up.railway.app``).  Stripe's API rejects ``success_url``
+    and ``cancel_url`` values that lack an explicit scheme, so we prepend
+    ``https://`` whenever the value is present but scheme-less.
+    """
+    if not url:
+        return url
+    url = url.rstrip("/")
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = f"https://{url}"
+    return url
+
+
 def load_settings() -> Settings:
     bot_token = os.environ.get("BOT_TOKEN")
     if not bot_token:
@@ -42,7 +58,7 @@ def load_settings() -> Settings:
         stripe_secret_key=os.environ.get("STRIPE_SECRET_KEY"),
         stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET"),
         stripe_price_id=os.environ.get("STRIPE_PRICE_ID"),
-        app_base_url=os.environ.get("APP_BASE_URL"),
+        app_base_url=_normalise_base_url(os.environ.get("APP_BASE_URL")),
         admin_secret=os.environ.get("ADMIN_SECRET"),
     )
 
