@@ -8,7 +8,13 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from poker_bot.domain import Game
-from poker_bot.models import ChatGameModel, GamePlayerModel
+from poker_bot.models import (
+    ChatGameModel,
+    GamePlayerModel,
+    ProductMetricEventModel,
+    SavedGroupMemberModel,
+    SavedGroupModel,
+)
 
 
 @dataclass
@@ -20,6 +26,7 @@ class GameSession:
     created_by_telegram_user_id: int | None = None
     finalized_by_telegram_user_id: int | None = None
     finalized_at: datetime | None = None
+    created_at: datetime | None = None
 
     @property
     def is_open(self) -> bool:
@@ -28,6 +35,36 @@ class GameSession:
     @property
     def is_closed(self) -> bool:
         return self.status == "closed"
+
+
+@dataclass(frozen=True)
+class SavedGroupSnapshot:
+    id: int
+    owner_telegram_user_id: int
+    name: str
+    player_names: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True)
+class GameHistoryEntry:
+    id: int
+    created_at: datetime
+    finalized_at: datetime | None
+    player_count: int
+    total_pot: Decimal
+    players: list[str]
+
+
+@dataclass(frozen=True)
+class PlayerStatsEntry:
+    player_name: str
+    games_played: int
+    total_net: Decimal
+    average_net: Decimal
+    wins: int
+    losses: int
 
 
 class DatabaseStore:
@@ -45,7 +82,23 @@ class DatabaseStore:
                 return None
             return self._to_session(game_row)
 
-    def start_new_game(self, chat_id: int, created_by_telegram_user_id: int | None = None) -> GameSession:
+    def get_latest_closed(self, chat_id: int) -> GameSession | None:
+        with self.session_factory() as session:
+            game_row = session.scalar(
+                select(ChatGameModel)
+                .where(ChatGameModel.chat_id == chat_id, ChatGameModel.status == "closed")
+                .order_by(ChatGameModel.id.desc())
+            )
+            if game_row is None:
+                return None
+            return self._to_session(game_row)
+
+    def start_new_game(
+        self,
+        chat_id: int,
+        created_by_telegram_user_id: int | None = None,
+        player_names: list[str] | None = None,
+    ) -> GameSession:
         with self.session_factory.begin() as session:
             session.execute(
                 delete(ChatGameModel).where(
@@ -59,6 +112,17 @@ class DatabaseStore:
                 created_by_telegram_user_id=created_by_telegram_user_id,
             )
             session.add(game_row)
+            session.flush()
+
+            for player_name in player_names or []:
+                game_row.players.append(
+                    GamePlayerModel(
+                        player_name=player_name,
+                        buyin=0,
+                        out=0,
+                    )
+                )
+
             session.flush()
             session.refresh(game_row)
             return self._to_session(game_row)
@@ -126,6 +190,132 @@ class DatabaseStore:
                 or 0
             )
 
+    def save_group(
+        self,
+        owner_telegram_user_id: int,
+        name: str,
+        player_names: list[str],
+    ) -> SavedGroupSnapshot:
+        with self.session_factory.begin() as session:
+            group_row = session.scalar(
+                select(SavedGroupModel).where(
+                    SavedGroupModel.owner_telegram_user_id == owner_telegram_user_id,
+                    SavedGroupModel.name == name,
+                )
+            )
+            if group_row is None:
+                group_row = SavedGroupModel(
+                    owner_telegram_user_id=owner_telegram_user_id,
+                    name=name,
+                )
+                session.add(group_row)
+                session.flush()
+
+            group_row.members.clear()
+            session.flush()
+
+            for player_name in player_names:
+                group_row.members.append(SavedGroupMemberModel(player_name=player_name))
+
+            session.flush()
+            session.refresh(group_row)
+            return self._to_saved_group_snapshot(group_row)
+
+    def get_saved_group(self, owner_telegram_user_id: int, name: str) -> SavedGroupSnapshot | None:
+        with self.session_factory() as session:
+            group_row = session.scalar(
+                select(SavedGroupModel).where(
+                    SavedGroupModel.owner_telegram_user_id == owner_telegram_user_id,
+                    SavedGroupModel.name == name,
+                )
+            )
+            if group_row is None:
+                return None
+            return self._to_saved_group_snapshot(group_row)
+
+    def list_saved_groups(self, owner_telegram_user_id: int) -> list[SavedGroupSnapshot]:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(SavedGroupModel)
+                .where(SavedGroupModel.owner_telegram_user_id == owner_telegram_user_id)
+                .order_by(SavedGroupModel.name.asc())
+            ).all()
+            return [self._to_saved_group_snapshot(row) for row in rows]
+
+    def list_closed_games(self, chat_id: int, limit: int = 10) -> list[GameHistoryEntry]:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(ChatGameModel)
+                .where(ChatGameModel.chat_id == chat_id, ChatGameModel.status == "closed")
+                .order_by(ChatGameModel.id.desc())
+                .limit(limit)
+            ).all()
+            return [self._to_history_entry(row) for row in rows]
+
+    def build_chat_player_stats(self, chat_id: int) -> list[PlayerStatsEntry]:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(ChatGameModel)
+                .where(ChatGameModel.chat_id == chat_id, ChatGameModel.status == "closed")
+                .order_by(ChatGameModel.id.asc())
+            ).all()
+
+            totals: dict[str, dict[str, Decimal | int]] = {}
+            for game_row in rows:
+                for player_row in game_row.players:
+                    item = totals.setdefault(
+                        player_row.player_name,
+                        {
+                            "games_played": 0,
+                            "total_net": Decimal("0.00"),
+                            "wins": 0,
+                            "losses": 0,
+                        },
+                    )
+                    net = (Decimal(str(player_row.out)) - Decimal(str(player_row.buyin))).quantize(Decimal("0.01"))
+                    item["games_played"] = int(item["games_played"]) + 1
+                    item["total_net"] = Decimal(item["total_net"]) + net
+                    if net > 0:
+                        item["wins"] = int(item["wins"]) + 1
+                    elif net < 0:
+                        item["losses"] = int(item["losses"]) + 1
+
+            results: list[PlayerStatsEntry] = []
+            for player_name, item in totals.items():
+                games_played = int(item["games_played"])
+                total_net = Decimal(item["total_net"]).quantize(Decimal("0.01"))
+                average_net = (total_net / games_played).quantize(Decimal("0.01")) if games_played else Decimal("0.00")
+                results.append(
+                    PlayerStatsEntry(
+                        player_name=player_name,
+                        games_played=games_played,
+                        total_net=total_net,
+                        average_net=average_net,
+                        wins=int(item["wins"]),
+                        losses=int(item["losses"]),
+                    )
+                )
+            return sorted(results, key=lambda item: (item.total_net, item.average_net, item.player_name), reverse=True)
+
+    def record_product_event(
+        self,
+        event_name: str,
+        telegram_user_id: int | None = None,
+        chat_id: int | None = None,
+        game_id: int | None = None,
+        properties: dict[str, object] | None = None,
+    ) -> None:
+        with self.session_factory.begin() as session:
+            session.add(
+                ProductMetricEventModel(
+                    event_name=event_name,
+                    telegram_user_id=telegram_user_id,
+                    chat_id=chat_id,
+                    game_id=game_id,
+                    properties_json=properties,
+                )
+            )
+
     @staticmethod
     def _to_session(game_row: ChatGameModel) -> GameSession:
         game = Game()
@@ -143,4 +333,32 @@ class DatabaseStore:
             created_by_telegram_user_id=game_row.created_by_telegram_user_id,
             finalized_by_telegram_user_id=game_row.finalized_by_telegram_user_id,
             finalized_at=game_row.finalized_at,
+            created_at=game_row.created_at,
+        )
+
+    @staticmethod
+    def _to_saved_group_snapshot(group_row: SavedGroupModel) -> SavedGroupSnapshot:
+        return SavedGroupSnapshot(
+            id=group_row.id,
+            owner_telegram_user_id=group_row.owner_telegram_user_id,
+            name=group_row.name,
+            player_names=[member.player_name for member in group_row.members],
+            created_at=group_row.created_at,
+            updated_at=group_row.updated_at,
+        )
+
+    @staticmethod
+    def _to_history_entry(game_row: ChatGameModel) -> GameHistoryEntry:
+        total_pot = Decimal("0.00")
+        players: list[str] = []
+        for player_row in game_row.players:
+            total_pot += Decimal(str(player_row.buyin))
+            players.append(player_row.player_name)
+        return GameHistoryEntry(
+            id=game_row.id,
+            created_at=game_row.created_at,
+            finalized_at=game_row.finalized_at,
+            player_count=len(players),
+            total_pot=total_pot.quantize(Decimal("0.01")),
+            players=players,
         )

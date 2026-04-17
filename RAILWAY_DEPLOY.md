@@ -34,13 +34,15 @@ Gameplay / monetization:
 
 - `MAX_PLAYERS_PER_GAME=10`
 - `FREE_TRIAL_GAMES_PER_CHAT=3`
-- `MAX_SUBSCRIPTION_GAMES_PER_PERIOD=100`
 
 Stripe:
 
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
-- `STRIPE_PRICE_ID`
+- `STRIPE_PRICE_ID_MONTHLY`
+- `STRIPE_PRICE_ID_QUARTERLY`
+- `STRIPE_PRICE_ID_SEMIANNUAL`
+- `STRIPE_PRICE_ID_YEARLY`
 
 Optional:
 
@@ -98,3 +100,5 @@ Railway can use:
 
 - Current schema is managed through Alembic.
 - Main deployment entrypoint for Railway is `server.py`.
+- Product metrics are stored in the `product_metric_events` table.
+- Saved regular companies are stored in `saved_groups` and `saved_group_members`.
