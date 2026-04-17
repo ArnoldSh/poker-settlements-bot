@@ -88,6 +88,19 @@ async def stripe_webhook(
     payload = await request.body()
     try:
         result = services.billing.process_webhook(payload, stripe_signature)
+        services.store.record_product_event(
+            "stripe_webhook_processed",
+            properties={"event_type": result.event_type, "status": result.status},
+        )
+        if result.event_type == "checkout.session.completed":
+            services.store.record_product_event("subscription_checkout_completed")
+        if result.event_type in {"customer.subscription.created", "customer.subscription.updated"}:
+            services.store.record_product_event(
+                "subscription_provider_state_changed",
+                properties={"event_type": result.event_type},
+            )
+        if result.event_type == "charge.refunded":
+            services.store.record_product_event("subscription_refunded")
         for notification in result.notifications:
             await services.user_notifier.notify(telegram_app.bot, notification)
         return {"event_id": result.event_id, "status": result.status}

@@ -15,6 +15,7 @@ from poker_bot.notifications import UserChatNotification
 
 ACTIVE_SUBSCRIPTION_STATUSES = {"active"}
 PENDING_SUBSCRIPTION_STATUSES = {"pending_activation"}
+SUBSCRIPTION_PLAN_CODES = ("monthly", "quarterly", "semiannual", "yearly")
 logger = logging.getLogger(__name__)
 
 
@@ -24,6 +25,7 @@ class SubscriptionSnapshot:
     status: str
     provider: str
     provider_status: str | None
+    plan_code: str | None
     current_period_start: datetime | None
     current_period_end: datetime | None
     checkout_session_id: str | None
@@ -90,6 +92,7 @@ class StripeBillingService:
                     status="inactive",
                     provider="stripe",
                     provider_status=None,
+                    plan_code=None,
                     current_period_start=None,
                     current_period_end=None,
                     checkout_session_id=None,
@@ -143,11 +146,13 @@ class StripeBillingService:
         self,
         telegram_user_id: int,
         chat_id: int,
+        plan_code: str,
         username: str | None = None,
         first_name: str | None = None,
     ) -> str:
         if not self.enabled:
             raise RuntimeError("Stripe is not configured.")
+        price_id = self._resolve_price_id(plan_code)
 
         with self.session_factory.begin() as session:
             user = self._ensure_user_row(session, telegram_user_id, username, first_name)
@@ -163,13 +168,21 @@ class StripeBillingService:
             checkout_session = stripe.checkout.Session.create(
                 mode="subscription",
                 customer=customer_id,
-                line_items=[{"price": self.settings.stripe_price_id, "quantity": 1}],
+                line_items=[{"price": price_id, "quantity": 1}],
                 client_reference_id=str(telegram_user_id),
                 success_url=f"{self.settings.app_base_url}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
                 cancel_url=f"{self.settings.app_base_url}/billing/cancel",
                 allow_promotion_codes=True,
-                metadata={"telegram_user_id": str(telegram_user_id)},
-                subscription_data={"metadata": {"telegram_user_id": str(telegram_user_id)}},
+                metadata={
+                    "telegram_user_id": str(telegram_user_id),
+                    "plan_code": plan_code,
+                },
+                subscription_data={
+                    "metadata": {
+                        "telegram_user_id": str(telegram_user_id),
+                        "plan_code": plan_code,
+                    }
+                },
             )
 
             subscription = self._ensure_subscription_row(session, telegram_user_id)
@@ -181,13 +194,15 @@ class StripeBillingService:
             subscription.pending_since = datetime.now(timezone.utc)
             subscription.last_pending_reminder_at = None
             subscription.stripe_customer_id = customer_id
-            subscription.stripe_price_id = self.settings.stripe_price_id
+            subscription.stripe_price_id = price_id
+            subscription.plan_code = plan_code
 
             return checkout_session["url"]
 
     @dataclass(frozen=True)
     class WebhookProcessingResult:
         event_id: str
+        event_type: str
         status: str
         notifications: list[UserChatNotification]
 
@@ -203,7 +218,12 @@ class StripeBillingService:
             existing = session.scalar(select(StripeEventModel).where(StripeEventModel.event_id == event_id))
             if existing is not None:
                 logger.info("stripe webhook skipped: duplicate event_id=%s", event_id)
-                return self.WebhookProcessingResult(event_id=event_id, status="already_processed", notifications=[])
+                return self.WebhookProcessingResult(
+                    event_id=event_id,
+                    event_type=event["type"],
+                    status="already_processed",
+                    notifications=[],
+                )
 
             session.add(
                 StripeEventModel(
@@ -217,7 +237,12 @@ class StripeBillingService:
             notifications = self._handle_event(session, event)
 
         logger.info("stripe webhook processed: event_id=%s", event_id)
-        return self.WebhookProcessingResult(event_id=event_id, status="processed", notifications=notifications)
+        return self.WebhookProcessingResult(
+            event_id=event_id,
+            event_type=event["type"],
+            status="processed",
+            notifications=notifications,
+        )
 
     def mark_cancel_requested(
         self,
@@ -353,6 +378,7 @@ class StripeBillingService:
             subscription.status = "pending_activation"
             subscription.stripe_customer_id = customer_id
             subscription.checkout_session_id = payload.get("id")
+            subscription.plan_code = payload.get("metadata", {}).get("plan_code")
             return []
 
         if event_type.startswith("customer.subscription."):
@@ -415,6 +441,7 @@ class StripeBillingService:
         subscription.stripe_subscription_id = stripe_subscription.get("id")
         subscription.stripe_customer_id = customer_id or stripe_subscription.get("customer")
         subscription.stripe_price_id = self._extract_price_id(stripe_subscription)
+        subscription.plan_code = self._extract_plan_code(stripe_subscription)
         subscription.current_period_start = self._ts_to_dt(stripe_subscription.get("current_period_start"))
         subscription.current_period_end = self._ts_to_dt(stripe_subscription.get("current_period_end"))
         subscription.status = self._map_provider_status(subscription.provider_status)
@@ -467,6 +494,15 @@ class StripeBillingService:
             session.flush()
         return subscription
 
+    def available_plan_codes(self) -> list[str]:
+        return [plan_code for plan_code in SUBSCRIPTION_PLAN_CODES if plan_code in self.settings.stripe_price_ids]
+
+    def _resolve_price_id(self, plan_code: str) -> str:
+        price_id = self.settings.stripe_price_ids.get(plan_code)
+        if price_id:
+            return price_id
+        raise ValueError(f"Unsupported subscription plan: {plan_code}")
+
     @staticmethod
     def _map_provider_status(provider_status: str | None) -> str:
         if provider_status in {"active", "trialing"}:
@@ -486,6 +522,18 @@ class StripeBillingService:
         items = payload.get("items", {}).get("data", [])
         if items:
             return items[0].get("price", {}).get("id")
+        return None
+
+    def _extract_plan_code(self, payload) -> str | None:
+        metadata = payload.get("metadata", {}) or {}
+        plan_code = metadata.get("plan_code")
+        if plan_code in SUBSCRIPTION_PLAN_CODES:
+            return plan_code
+
+        price_id = self._extract_price_id(payload)
+        for candidate, candidate_price_id in self.settings.stripe_price_ids.items():
+            if candidate_price_id == price_id:
+                return candidate
         return None
 
     @staticmethod
@@ -526,6 +574,7 @@ class StripeBillingService:
             status=subscription.status,
             provider=subscription.provider,
             provider_status=subscription.provider_status,
+            plan_code=subscription.plan_code,
             current_period_start=subscription.current_period_start,
             current_period_end=subscription.current_period_end,
             checkout_session_id=subscription.checkout_session_id,
@@ -560,6 +609,7 @@ class StripeBillingService:
                         chat_id=chat_id,
                         text=tr(
                             "subscription_event_paid",
+                            plan=tr(f"plan_{current.plan_code or 'monthly'}"),
                             date=self._format_period_end(current.current_period_end),
                         ),
                     )
@@ -572,6 +622,7 @@ class StripeBillingService:
                         chat_id=chat_id,
                         text=tr(
                             "subscription_event_paid",
+                            plan=tr(f"plan_{current.plan_code or 'monthly'}"),
                             date=self._format_period_end(current.current_period_end),
                         ),
                     )
