@@ -8,6 +8,7 @@ from poker_bot.i18n import tr
 
 MAX_PLAYER_NAME_LENGTH = 64
 TAG_PATTERN = re.compile(r"^@?[A-Za-z0-9_]+$")
+NUMBER_ONLY_PATTERN = re.compile(r"^[+-]?\d+(?:[.,]\d+)?$")
 
 
 def normalize_name(name: str) -> str:
@@ -34,6 +35,21 @@ def parse_amount_expression(expression: str) -> Decimal:
 
     try:
         return sum((decimal_amount(part) for part in parts), Decimal(0))
+    except ValueError as exc:
+        raise ValueError(tr("parse_amount_expression", expression=expression)) from exc
+
+
+def parse_amount_components(expression: str) -> list[Decimal]:
+    cleaned = expression.strip()
+    if not cleaned:
+        raise ValueError(tr("parse_amount_expression", expression=expression))
+
+    parts = [part.strip() for part in cleaned.split("+")]
+    if any(not part for part in parts):
+        raise ValueError(tr("parse_amount_expression", expression=expression))
+
+    try:
+        return [decimal_amount(part) for part in parts]
     except ValueError as exc:
         raise ValueError(tr("parse_amount_expression", expression=expression)) from exc
 
@@ -76,3 +92,30 @@ def parse_line(text: str) -> tuple[str, Decimal, Decimal]:
 
     buy_expr, out_expr = split_amounts(rest)
     return normalize_name(raw_name), parse_amount_expression(buy_expr), parse_amount_expression(out_expr)
+
+
+def parse_line_with_buyin_entries(text: str) -> tuple[str, Decimal, Decimal, list[Decimal]]:
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError(tr("parse_line_format"))
+
+    try:
+        raw_name, rest = stripped.split(maxsplit=1)
+    except ValueError as exc:
+        raise ValueError(tr("parse_line_format")) from exc
+
+    buy_expr, out_expr = split_amounts(rest)
+    buyin_entries = parse_amount_components(buy_expr)
+    return (
+        normalize_name(raw_name),
+        sum(buyin_entries, Decimal(0)),
+        parse_amount_expression(out_expr),
+        buyin_entries,
+    )
+
+
+def parse_number_only(text: str) -> Decimal | None:
+    stripped = text.strip()
+    if not NUMBER_ONLY_PATTERN.match(stripped):
+        return None
+    return parse_amount_expression(stripped)

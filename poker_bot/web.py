@@ -53,6 +53,69 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Poker Settlements Bot", lifespan=lifespan)
 
 
+def _telegram_update_reference_log(update: Update) -> dict[str, object]:
+    event_types: list[str] = []
+    refs: dict[str, object] = {"update_id": update.update_id}
+
+    typed_objects = {
+        "message": update.message,
+        "edited_message": update.edited_message,
+        "channel_post": update.channel_post,
+        "edited_channel_post": update.edited_channel_post,
+        "callback_query": update.callback_query,
+        "inline_query": update.inline_query,
+        "chosen_inline_result": update.chosen_inline_result,
+        "shipping_query": update.shipping_query,
+        "pre_checkout_query": update.pre_checkout_query,
+        "poll": update.poll,
+        "poll_answer": update.poll_answer,
+        "my_chat_member": update.my_chat_member,
+        "chat_member": update.chat_member,
+        "chat_join_request": update.chat_join_request,
+    }
+    for event_type, value in typed_objects.items():
+        if value is not None:
+            event_types.append(event_type)
+
+    message = update.effective_message
+    if message is not None:
+        refs["message_id"] = message.message_id
+
+    chat = update.effective_chat
+    if chat is not None:
+        refs["chat_id"] = chat.id
+        refs["chat_type"] = chat.type
+
+    user = update.effective_user
+    if user is not None:
+        refs["user_id"] = user.id
+
+    if update.callback_query is not None:
+        refs["callback_query_id"] = update.callback_query.id
+        if update.callback_query.message is not None:
+            refs["callback_message_id"] = update.callback_query.message.message_id
+
+    if update.inline_query is not None:
+        refs["inline_query_id"] = update.inline_query.id
+
+    if update.chosen_inline_result is not None:
+        refs["chosen_inline_result_id"] = update.chosen_inline_result.result_id
+
+    if update.shipping_query is not None:
+        refs["shipping_query_id"] = update.shipping_query.id
+
+    if update.pre_checkout_query is not None:
+        refs["pre_checkout_query_id"] = update.pre_checkout_query.id
+
+    if update.poll is not None:
+        refs["poll_id"] = update.poll.id
+
+    if update.poll_answer is not None:
+        refs["poll_id"] = update.poll_answer.poll_id
+
+    return {"event_types": event_types or ["unknown"], **refs}
+
+
 @app.get("/healthz")
 async def healthcheck() -> dict[str, str]:
     return {"status": "ok"}
@@ -68,9 +131,9 @@ async def telegram_webhook(
         raise HTTPException(status_code=401, detail=tr("webhook_secret_invalid"))
 
     payload = await request.json()
-    logger.info("telegram webhook received")
     update = Update.de_json(payload, telegram_app.bot)
     if update is not None:
+        logger.info("telegram webhook received: %s", _telegram_update_reference_log(update))
         try:
             await telegram_app.process_update(update)
         except Exception:
@@ -94,12 +157,12 @@ async def stripe_webhook(
         )
         if result.event_type == "checkout.session.completed":
             services.store.record_product_event("subscription_checkout_completed")
-        if result.event_type in {"customer.subscription.created", "customer.subscription.updated"}:
+        if result.event_type.startswith("customer.subscription."):
             services.store.record_product_event(
                 "subscription_provider_state_changed",
                 properties={"event_type": result.event_type},
             )
-        if result.event_type == "charge.refunded":
+        if result.event_type in {"charge.refunded", "refund.updated"}:
             services.store.record_product_event("subscription_refunded")
         for notification in result.notifications:
             await services.user_notifier.notify(telegram_app.bot, notification)

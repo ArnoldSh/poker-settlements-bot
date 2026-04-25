@@ -35,6 +35,8 @@ class ChatGameModel(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     chat_id: Mapped[int] = mapped_column(sa.BigInteger(), index=True)
     status: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    input_mode: Mapped[str] = mapped_column(String(32), default="manual", index=True)
+    interactive_phase: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_by_telegram_user_id: Mapped[int | None] = mapped_column(sa.BigInteger(), nullable=True)
     finalized_by_telegram_user_id: Mapped[int | None] = mapped_column(sa.BigInteger(), nullable=True)
     finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -45,6 +47,16 @@ class ChatGameModel(Base):
         back_populates="game",
         cascade="all, delete-orphan",
         order_by="GamePlayerModel.id",
+    )
+    interactive_messages: Mapped[list["InteractiveGameMessageModel"]] = relationship(
+        back_populates="game",
+        cascade="all, delete-orphan",
+        order_by="InteractiveGameMessageModel.id",
+    )
+    buyin_entries: Mapped[list["GameBuyinEntryModel"]] = relationship(
+        back_populates="game",
+        cascade="all, delete-orphan",
+        order_by="GameBuyinEntryModel.id",
     )
 
 
@@ -59,6 +71,40 @@ class GamePlayerModel(Base):
     out: Mapped[float] = mapped_column(Numeric(12, 2))
 
     game: Mapped[ChatGameModel] = relationship(back_populates="players")
+
+
+class InteractiveGameMessageModel(Base):
+    __tablename__ = "interactive_game_messages"
+    __table_args__ = (UniqueConstraint("game_id", "telegram_message_id", name="uq_interactive_game_message"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    game_id: Mapped[int] = mapped_column(ForeignKey("chat_games.id", ondelete="CASCADE"), index=True)
+    chat_id: Mapped[int] = mapped_column(sa.BigInteger(), index=True)
+    telegram_message_id: Mapped[int] = mapped_column(sa.BigInteger())
+    telegram_user_id: Mapped[int | None] = mapped_column(sa.BigInteger(), nullable=True)
+    player_name: Mapped[str] = mapped_column(String(255))
+    phase: Mapped[str] = mapped_column(String(32))
+    amount: Mapped[float] = mapped_column(Numeric(12, 2))
+    raw_text: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    game: Mapped[ChatGameModel] = relationship(back_populates="interactive_messages")
+
+
+class GameBuyinEntryModel(Base):
+    __tablename__ = "game_buyin_entries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    game_id: Mapped[int] = mapped_column(ForeignKey("chat_games.id", ondelete="CASCADE"), index=True)
+    player_name: Mapped[str] = mapped_column(String(255), index=True)
+    amount: Mapped[float] = mapped_column(Numeric(12, 2))
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    source_message_id: Mapped[int | None] = mapped_column(sa.BigInteger(), nullable=True)
+    raw_text: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    game: Mapped[ChatGameModel] = relationship(back_populates="buyin_entries")
 
 
 class UserSubscriptionModel(Base):

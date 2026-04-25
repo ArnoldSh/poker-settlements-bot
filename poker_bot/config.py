@@ -14,6 +14,7 @@ class Settings:
     telegram_webhook_secret_token: str | None
     max_players_per_game: int
     free_trial_games_per_chat: int
+    free_trial_days: int
     admin_telegram_chat_id: int | None
     stripe_secret_key: str | None
     stripe_webhook_secret: str | None
@@ -76,6 +77,7 @@ def load_settings() -> Settings:
         telegram_webhook_secret_token=os.environ.get("BOT_WEBHOOK_SECRET_TOKEN"),
         max_players_per_game=int(os.environ.get("MAX_PLAYERS_PER_GAME", "10")),
         free_trial_games_per_chat=int(os.environ.get("FREE_TRIAL_GAMES_PER_CHAT", "3")),
+        free_trial_days=int(os.environ.get("FREE_TRIAL_DAYS", "31")),
         admin_telegram_chat_id=(
             int(os.environ["ADMIN_TELEGRAM_CHAT_ID"])
             if os.environ.get("ADMIN_TELEGRAM_CHAT_ID")

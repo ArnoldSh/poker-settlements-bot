@@ -54,6 +54,9 @@ RU_CATALOG = Catalog(
             "/start - краткая справка\n"
             "/help - полная справка\n"
             "/newgame - пустая новая игра\n"
+            "/newgame i - интерактивный сбор входов и выходов\n"
+            "/finish - завершить сбор входов в интерактивной игре\n"
+            "/restart - пересобрать интерактивную игру из сохраненных сообщений\n"
             "/startgame &lt;название группы&gt; - новая игра из сохраненной компании\n"
             "/revanche - новая игра с составом прошлой закрытой игры\n"
             "/savegroup &lt;название&gt; - сохранить текущий состав игроков\n"
@@ -63,6 +66,7 @@ RU_CATALOG = Catalog(
             "/remove @user - удалить игрока\n"
             "/removeAll - удалить всех игроков из открытой игры\n"
             "/list - показать текущую таблицу\n"
+            "/list a - показать таблицу и Premium-анализ расхождения\n"
             "/calc [direct|hub] [@hub] - завершить игру, посчитать переводы и показать статистику\n"
             "/history [N] - история последних игр\n"
             "/export_csv - выгрузить последнюю закрытую игру в CSV\n\n"
@@ -96,11 +100,11 @@ RU_CATALOG = Catalog(
             "Бесплатный лимит для этого чата исчерпан. Чтобы создать новую игру, нужна активная подписка. "
             "Используйте /sub."
         ),
-        "limits_status_free_only": "Бесплатных игр в этом чате осталось: {free_games_left}",
-        "limits_status_unlimited": (
-            "Бесплатных игр в этом чате осталось: {free_games_left}\n"
-            "По активной подписке новые игры сейчас без лимита."
+        "subscription_required_after_subscription": (
+            "Пробный лимит для этого чата больше недоступен: он действует только один раз до первой подписки. "
+            "Чтобы создать новую игру, нужна активная подписка. Используйте /sub."
         ),
+        "limits_status_free_only": "Бесплатных игр в этом чате осталось: {free_games_left}",
         "subscription_status_active": "Подписка активна: {plan}. Следующее продление или окончание периода: {date}.",
         "subscription_status_active_open": "Подписка активна: {plan}.",
         "subscription_status_pending": "Подписка создана, но оплата еще не завершена. Завершите оплату по вашей ссылке Stripe.",
@@ -129,6 +133,15 @@ RU_CATALOG = Catalog(
         "plan_semiannual": "на полгода",
         "plan_yearly": "годовая",
         "newgame_done": "Новая игра создана. Теперь можно добавлять игроков.",
+        "newgame_interactive_done": (
+            "Интерактивная игра создана. Сейчас собираю входы: игроки отправляют в чат сообщения только с числами. "
+            "Когда входы собраны, отправьте /finish, после этого начну собирать выходы."
+        ),
+        "interactive_buyins_finished": "Входы зафиксированы. Теперь собираю выходы: игроки снова отправляют сообщения только с числами.",
+        "interactive_finish_manual_game": "Команда /finish работает только для игры, начатой через /newgame i.",
+        "interactive_restart_manual_game": "Команда /restart работает только для игры, начатой через /newgame i.",
+        "interactive_restart_done": "Интерактивная игра пересобрана из сохраненных сообщений. Игроков: {players}.",
+        "interactive_calc_before_finish": "Сначала завершите сбор входов командой /finish, затем соберите выходы и запускайте /list или /calc.",
         "savegroup_usage": "Использование: /savegroup Friday Home Game",
         "savegroup_done": "Компания '{name}' сохранена. Игроков: {count}.",
         "groups_title": "<b>Сохраненные компании</b>",
@@ -159,10 +172,25 @@ RU_CATALOG = Catalog(
         "remove_done": "Удален.",
         "remove_missing": "Игрок не найден.",
         "remove_all_done": "Все игроки из текущей игры удалены.",
+        "remove_interactive_unavailable": "В интерактивной игре /remove и /removeAll недоступны. Исправьте сообщения игроков и используйте /restart.",
         "player_limit_reached": "В одной игре можно держать не больше {limit} игроков.",
         "list_empty": "Список игроков пуст.",
         "table_header": "<b>Игрок</b> | <b>Вход</b> | <b>Выход</b> | <b>Итог</b>",
         "table_totals": "Σ | {buyin} | {out} | <b>{net}</b>",
+        "list_analysis_premium_required": "Анализ расхождения доступен только с активной подпиской.",
+        "list_analysis_title": "<b>Анализ расхождения</b>",
+        "list_analysis_balanced": "<b>Анализ расхождения</b>\nВходы и выходы сходятся.",
+        "list_analysis_out_over": "Выходы больше входов на {amount}.",
+        "list_analysis_buyin_over": "Входы больше выходов на {amount}.",
+        "list_analysis_out_over_hint": "Проверьте: возможно, забыли вход на {amount} или лишний/ошибочный выход на {amount}.",
+        "list_analysis_buyin_over_hint": "Проверьте: возможно, забыли выход на {amount} или лишний/ошибочный вход на {amount}.",
+        "list_analysis_exact_title": "Точные совпадения с размером расхождения:",
+        "list_analysis_exact_item": "• {player}: {phase} {amount}{raw}",
+        "list_analysis_phase_buyin": "вход",
+        "list_analysis_phase_out": "выход",
+        "list_analysis_player_buyin_match": "• У {player} суммарный вход ровно {amount}.",
+        "list_analysis_player_out_match": "• У {player} выход ровно {amount}.",
+        "list_analysis_no_exact": "Точных совпадений на {amount} не нашел. Вероятно, ошибка распределена по нескольким записям.",
         "calc_no_data": "Нет данных по игрокам. Сначала добавьте игроков через /add или /addblock.",
         "calc_mode_hub": "Режим: HUB. Хаб: <b>{hub}</b>.",
         "calc_mode_direct": "Режим: DIRECT.",
@@ -193,6 +221,7 @@ RU_CATALOG = Catalog(
         "highlights_zero_direction": "ноль",
         "subscription_event_started_pending": "Подписка создана. Ждем завершения оплаты.",
         "subscription_event_paid": "Оплата прошла успешно. Подписка {plan} активна до {date}.",
+        "subscription_event_paused": "Подписка поставлена на паузу или требует оплаты. Новые игры по подписке временно недоступны.",
         "subscription_event_canceled": "Подписка отменена.",
         "subscription_event_refunded": "Рефанд выполнен успешно.",
         "billing_return_to_telegram_page": "Можно вернуться в Telegram. Дальнейшие уведомления придут в чат.",

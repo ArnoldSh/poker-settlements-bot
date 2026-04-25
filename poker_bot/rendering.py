@@ -5,7 +5,7 @@ from decimal import Decimal
 from poker_bot.domain import Game, Transfer
 from poker_bot.formatting import MONEY_Q, eur
 from poker_bot.i18n import tr
-from poker_bot.store import GameHistoryEntry, PlayerStatsEntry, SavedGroupSnapshot
+from poker_bot.store import GameAmountEntry, GameHistoryEntry, PlayerStatsEntry, SavedGroupSnapshot
 
 
 def render_table(game: Game) -> str:
@@ -25,6 +25,57 @@ def render_table(game: Game) -> str:
             net=eur(game.total_out - game.total_buyin),
         )
     )
+    return "\n".join(lines)
+
+
+def render_balance_analysis(game: Game, entries: list[GameAmountEntry]) -> str:
+    diff = (game.total_out - game.total_buyin).quantize(MONEY_Q)
+    if diff == 0:
+        return tr("list_analysis_balanced")
+
+    gap = abs(diff).quantize(MONEY_Q)
+    lines = [tr("list_analysis_title")]
+    if diff > 0:
+        lines.append(tr("list_analysis_out_over", amount=eur(gap)))
+        lines.append(tr("list_analysis_out_over_hint", amount=eur(gap)))
+        suspicious_phase = "out"
+    else:
+        lines.append(tr("list_analysis_buyin_over", amount=eur(gap)))
+        lines.append(tr("list_analysis_buyin_over_hint", amount=eur(gap)))
+        suspicious_phase = "buyin"
+
+    exact_entries = [
+        entry for entry in entries
+        if entry.phase == suspicious_phase and entry.amount == gap
+    ]
+    if exact_entries:
+        lines.append(tr("list_analysis_exact_title"))
+        for entry in exact_entries[:5]:
+            raw = f" ({entry.raw_text})" if entry.raw_text else ""
+            lines.append(
+                tr(
+                    "list_analysis_exact_item",
+                    player=entry.player_name,
+                    phase=tr(f"list_analysis_phase_{entry.phase}"),
+                    amount=eur(entry.amount),
+                    raw=raw,
+                )
+            )
+
+    player_matches = []
+    for player in game.players.values():
+        if suspicious_phase == "buyin" and player.buyin == gap:
+            player_matches.append(tr("list_analysis_player_buyin_match", player=player.name, amount=eur(gap)))
+        if suspicious_phase == "out" and player.out == gap:
+            player_matches.append(tr("list_analysis_player_out_match", player=player.name, amount=eur(gap)))
+
+    for item in player_matches[:5]:
+        if item not in lines:
+            lines.append(item)
+
+    if not exact_entries and not player_matches:
+        lines.append(tr("list_analysis_no_exact", amount=eur(gap)))
+
     return "\n".join(lines)
 
 

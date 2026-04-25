@@ -35,6 +35,12 @@ class BillingStatusMappingTests(unittest.TestCase):
             "expired",
         )
 
+    def test_paused_provider_status_maps_to_payment_problem(self) -> None:
+        self.assertEqual(
+            StripeBillingService._map_provider_status("paused"),
+            "payment_problem",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

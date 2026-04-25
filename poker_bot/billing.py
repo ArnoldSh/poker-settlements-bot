@@ -108,6 +108,23 @@ class StripeBillingService:
 
             return self._snapshot(subscription)
 
+    def chat_has_subscription_history(self, chat_id: int) -> bool:
+        historical_statuses = {"active", "payment_problem", "canceled", "expired"}
+        with self.session_factory() as session:
+            return (
+                session.scalar(
+                    select(UserSubscriptionModel.id).where(
+                        (
+                            (UserSubscriptionModel.requested_chat_id == chat_id)
+                            | (UserSubscriptionModel.cancel_requested_chat_id == chat_id)
+                            | (UserSubscriptionModel.refund_requested_chat_id == chat_id)
+                        ),
+                        UserSubscriptionModel.status.in_(historical_statuses),
+                    )
+                )
+                is not None
+            )
+
     def refresh_subscription(self, telegram_user_id: int) -> SubscriptionSnapshot:
         with self.session_factory.begin() as session:
             subscription = session.scalar(
@@ -406,8 +423,14 @@ class StripeBillingService:
             )
             return self._build_subscription_notifications(previous_snapshot, subscription, event_type)
 
-        if event_type == "charge.refunded":
+        if event_type in {"charge.refunded", "refund.updated"}:
             customer_id = payload.get("customer")
+            if not customer_id and payload.get("charge"):
+                try:
+                    charge = stripe.Charge.retrieve(payload.get("charge"))
+                    customer_id = charge.get("customer")
+                except Exception:
+                    logger.exception("failed to retrieve charge for refund webhook")
             if not customer_id:
                 return []
 
@@ -437,7 +460,7 @@ class StripeBillingService:
         )
         subscription = self._ensure_subscription_row(session, telegram_user_id)
         subscription.provider = "stripe"
-        subscription.provider_status = stripe_subscription.get("status")
+        subscription.provider_status = "paused" if stripe_subscription.get("pause_collection") else stripe_subscription.get("status")
         subscription.stripe_subscription_id = stripe_subscription.get("id")
         subscription.stripe_customer_id = customer_id or stripe_subscription.get("customer")
         subscription.stripe_price_id = self._extract_price_id(stripe_subscription)
@@ -627,6 +650,13 @@ class StripeBillingService:
                         ),
                     )
                 ]
+            if previous.status == "active" and current.status == "payment_problem":
+                return [UserChatNotification(chat_id=chat_id, text=tr("subscription_event_paused"))]
+            if previous.status == "active" and current.status in {"canceled", "expired"}:
+                return [UserChatNotification(chat_id=chat_id, text=tr("subscription_event_canceled"))]
+
+        if event_type == "customer.subscription.paused":
+            return [UserChatNotification(chat_id=chat_id, text=tr("subscription_event_paused"))]
 
         if event_type == "customer.subscription.deleted":
             return [UserChatNotification(chat_id=chat_id, text=tr("subscription_event_canceled"))]
