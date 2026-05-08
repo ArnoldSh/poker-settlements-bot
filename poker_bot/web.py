@@ -8,9 +8,11 @@ from fastapi.responses import HTMLResponse
 from telegram import Update
 from telegram.ext import ApplicationBuilder
 
+from poker_bot.access import EntitlementPolicy
 from poker_bot.billing import StripeBillingService
 from poker_bot.config import Settings, load_settings
 from poker_bot.db import build_engine, build_session_factory
+from poker_bot.features import FeatureFlags
 from poker_bot.handlers import register_handlers
 from poker_bot.i18n import tr
 from poker_bot.logging_utils import configure_logging
@@ -33,6 +35,8 @@ async def lifespan(app: FastAPI):
             settings=settings,
             store=DatabaseStore(session_factory),
             billing=StripeBillingService(settings, session_factory),
+            entitlements=EntitlementPolicy(settings.admin_user_id),
+            features=FeatureFlags(settings.enabled_premium_features),
             admin_notifier=TelegramAdminNotifier(settings.admin_telegram_chat_id),
             user_notifier=TelegramUserNotifier(),
         )
@@ -166,6 +170,8 @@ async def stripe_webhook(
             services.store.record_product_event("subscription_refunded")
         for notification in result.notifications:
             await services.user_notifier.notify(telegram_app.bot, notification)
+        for notification in result.admin_notifications:
+            await services.admin_notifier.notify_system(telegram_app.bot, notification)
         return {"event_id": result.event_id, "status": result.status}
     except Exception:
         logger.exception("stripe webhook processing failed")

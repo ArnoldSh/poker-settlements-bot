@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from poker_bot.features import DEFAULT_ENABLED_PREMIUM_FEATURES, parse_feature_list
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -15,7 +17,9 @@ class Settings:
     max_players_per_game: int
     free_trial_games_per_chat: int
     free_trial_days: int
+    admin_user_id: int | None
     admin_telegram_chat_id: int | None
+    enabled_premium_features: frozenset[str]
     stripe_secret_key: str | None
     stripe_webhook_secret: str | None
     stripe_price_id_monthly: str | None
@@ -78,10 +82,18 @@ def load_settings() -> Settings:
         max_players_per_game=int(os.environ.get("MAX_PLAYERS_PER_GAME", "10")),
         free_trial_games_per_chat=int(os.environ.get("FREE_TRIAL_GAMES_PER_CHAT", "3")),
         free_trial_days=int(os.environ.get("FREE_TRIAL_DAYS", "31")),
+        admin_user_id=(
+            int(os.environ["ADMIN_USER_ID"])
+            if os.environ.get("ADMIN_USER_ID")
+            else None
+        ),
         admin_telegram_chat_id=(
             int(os.environ["ADMIN_TELEGRAM_CHAT_ID"])
             if os.environ.get("ADMIN_TELEGRAM_CHAT_ID")
             else None
+        ),
+        enabled_premium_features=parse_feature_list(
+            os.environ.get("ENABLED_PREMIUM_FEATURES", DEFAULT_ENABLED_PREMIUM_FEATURES)
         ),
         stripe_secret_key=os.environ.get("STRIPE_SECRET_KEY"),
         stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET"),

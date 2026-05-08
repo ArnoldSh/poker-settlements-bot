@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from poker_bot.access import EntitlementPolicy
 from poker_bot.billing import StripeBillingService
 from poker_bot.config import Settings
+from poker_bot.features import FeatureFlags
 from poker_bot.notifications import TelegramAdminNotifier, TelegramUserNotifier
 from poker_bot.store import DatabaseStore
 
@@ -13,6 +15,8 @@ class AppServices:
     settings: Settings
     store: DatabaseStore
     billing: StripeBillingService
+    entitlements: EntitlementPolicy
+    features: FeatureFlags
     admin_notifier: TelegramAdminNotifier
     user_notifier: TelegramUserNotifier
 

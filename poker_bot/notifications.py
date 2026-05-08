@@ -23,6 +23,11 @@ class UserChatNotification:
     text: str
 
 
+@dataclass(frozen=True)
+class AdminSystemNotification:
+    text: str
+
+
 class TelegramAdminNotifier:
     def __init__(self, admin_chat_id: int | None) -> None:
         self.admin_chat_id = admin_chat_id
@@ -50,6 +55,13 @@ class TelegramAdminNotifier:
                 f"Исходный chat id: {payload.source_chat_id or '-'}"
             ),
         )
+        return True
+
+    async def notify_system(self, bot: Bot, payload: AdminSystemNotification) -> bool:
+        if self.admin_chat_id is None:
+            return False
+
+        await bot.send_message(chat_id=self.admin_chat_id, text=payload.text)
         return True
 
 

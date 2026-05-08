@@ -48,7 +48,9 @@ Optional:
 
 - `HOST=0.0.0.0`
 - `PORT` is usually injected by Railway automatically
+- `ADMIN_USER_ID` Telegram user id that bypasses paid limits and premium feature gates
 - `ADMIN_TELEGRAM_CHAT_ID` for manual subscription cancellation notifications
+- `ENABLED_PREMIUM_FEATURES` comma-separated premium feature toggles to enable. Defaults to all guarded premium features: `revanche,savegroup,groups,analyze,history,export_csv,sub_refund`.
 
 ## 4. Database Migration
 

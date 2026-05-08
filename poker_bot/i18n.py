@@ -66,19 +66,19 @@ RU_CATALOG = Catalog(
             "/remove @user - удалить игрока\n"
             "/removeAll - удалить всех игроков из открытой игры\n"
             "/list - показать текущую таблицу\n"
-            "/list a - показать таблицу и Premium-анализ расхождения\n"
+            "/analyze - показать таблицу и Premium-анализ расхождения\n"
             "/calc [direct|hub] [@hub] - завершить игру, посчитать переводы и показать статистику\n"
             "/history [N] - история последних игр\n"
             "/export_csv - выгрузить последнюю закрытую игру в CSV\n\n"
             "<b>Подписка</b>\n"
             "/sub - показать доступные планы подписки\n"
-            "/sub monthly - месячная подписка\n"
-            "/sub quarterly - подписка на 3 месяца\n"
-            "/sub semiannual - подписка на полгода\n"
-            "/sub yearly - подписка на год\n"
+            "/sub 1m - месячная подписка\n"
+            "/sub 3m - подписка на 3 месяца\n"
+            "/sub 6m - подписка на полгода\n"
+            "/sub 1y - подписка на год\n"
             "/sub_status - статус вашей подписки\n"
-            "/sub_cancel - запросить ручную отмену\n"
-            "/sub_refund - запросить ручной рефанд\n\n"
+            "/sub_cancel - отменить подписку\n"
+            "/sub_refund - запросить рефанд\n\n"
             "<b>Поддерживаемый ввод</b>\n"
             "<code>/add @ivan 100</code>\n"
             "<code>/add @ivan 100, 20</code>\n"
@@ -107,6 +107,7 @@ RU_CATALOG = Catalog(
         "limits_status_free_only": "Бесплатных игр в этом чате осталось: {free_games_left}",
         "subscription_status_active": "Подписка активна: {plan}. Следующее продление или окончание периода: {date}.",
         "subscription_status_active_open": "Подписка активна: {plan}.",
+        "subscription_status_admin": "Админский доступ активен. Платные ограничения не применяются.",
         "subscription_status_pending": "Подписка создана, но оплата еще не завершена. Завершите оплату по вашей ссылке Stripe.",
         "subscription_status_payment_problem": "У подписки есть проблема с оплатой. Проверьте платеж в Stripe или оформите подписку заново через /sub.",
         "subscription_status_canceled": "Подписка отменена.",
@@ -116,14 +117,14 @@ RU_CATALOG = Catalog(
         "subscription_checkout_created": "Оформить подписку ({plan}) можно по ссылке:\n{url}",
         "subscription_plan_choose": (
             "Выберите план подписки командой:\n"
-            "/sub monthly\n"
-            "/sub quarterly\n"
-            "/sub semiannual\n"
-            "/sub yearly"
+            "/sub 1m\n"
+            "/sub 3m\n"
+            "/sub 6m\n"
+            "/sub 1y"
         ),
         "subscription_plan_item": "• {label}: /sub {code}",
-        "subscription_cancel_requested": "Запрос на ручную отмену подписки отправлен администратору.",
-        "subscription_cancel_unavailable": "Ручная отмена подписки пока не настроена. Попробуйте позже.",
+        "subscription_cancel_requested": "Запрос на отмену подписки отправлен в Stripe. Когда отмена будет подтверждена, я напишу в чат.",
+        "subscription_cancel_unavailable": "Не удалось отправить запрос на отмену подписки в Stripe. Попробуйте позже.",
         "subscription_cancel_no_subscription": "Активной или ожидающей подписки не найдено.",
         "subscription_refund_requested": "Запрос на рефанд отправлен администратору. Ответ придет отдельно в Telegram.",
         "subscription_refund_unavailable": "Рефанд пока нельзя запросить через бота. Попробуйте позже.",
@@ -222,7 +223,16 @@ RU_CATALOG = Catalog(
         "subscription_event_started_pending": "Подписка создана. Ждем завершения оплаты.",
         "subscription_event_paid": "Оплата прошла успешно. Подписка {plan} активна до {date}.",
         "subscription_event_paused": "Подписка поставлена на паузу или требует оплаты. Новые игры по подписке временно недоступны.",
-        "subscription_event_canceled": "Подписка отменена.",
+        "subscription_event_canceled": "Ваша подписка была отменена.",
+        "admin_subscription_event_canceled": (
+            "Системное оповещение: подписка отменена\n"
+            "Telegram user id: {telegram_user_id}\n"
+            "Provider: {provider}\n"
+            "Provider subscription id: {provider_subscription_id}\n"
+            "Локальный статус: {local_status}\n"
+            "Provider status: {provider_status}\n"
+            "Чат уведомления: {source_chat_id}"
+        ),
         "subscription_event_refunded": "Рефанд выполнен успешно.",
         "billing_return_to_telegram_page": "Можно вернуться в Telegram. Дальнейшие уведомления придут в чат.",
     },
