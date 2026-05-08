@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
+from datetime import timedelta
 
 from poker_bot.features import DEFAULT_ENABLED_PREMIUM_FEATURES, parse_feature_list
 
@@ -18,32 +20,15 @@ class Settings:
     free_trial_games_per_chat: int
     free_trial_days: int
     admin_user_id: int | None
-    admin_telegram_chat_id: int | None
+    permission_table_cache_ttl: timedelta
     enabled_premium_features: frozenset[str]
     stripe_secret_key: str | None
     stripe_webhook_secret: str | None
-    stripe_price_id_monthly: str | None
-    stripe_price_id_quarterly: str | None
-    stripe_price_id_semiannual: str | None
-    stripe_price_id_yearly: str | None
     app_base_url: str | None
 
     @property
     def stripe_enabled(self) -> bool:
-        return bool(self.stripe_secret_key and self.app_base_url and self.stripe_price_ids)
-
-    @property
-    def stripe_price_ids(self) -> dict[str, str]:
-        result: dict[str, str] = {}
-        if self.stripe_price_id_monthly:
-            result["monthly"] = self.stripe_price_id_monthly
-        if self.stripe_price_id_quarterly:
-            result["quarterly"] = self.stripe_price_id_quarterly
-        if self.stripe_price_id_semiannual:
-            result["semiannual"] = self.stripe_price_id_semiannual
-        if self.stripe_price_id_yearly:
-            result["yearly"] = self.stripe_price_id_yearly
-        return result
+        return bool(self.stripe_secret_key and self.app_base_url)
 
 
 def _normalise_base_url(url: str | None) -> str | None:
@@ -62,6 +47,37 @@ def _normalise_base_url(url: str | None) -> str | None:
     return url
 
 
+_DURATION_PATTERN = re.compile(r"^(?P<amount>\d+)(?P<unit>[smhd])?$", re.IGNORECASE)
+
+
+def _parse_duration(value: str | None, default: timedelta) -> timedelta:
+    if value is None or not value.strip():
+        return default
+
+    raw_value = value.strip()
+    match = _DURATION_PATTERN.match(raw_value)
+    if match:
+        amount = int(match.group("amount"))
+        unit = (match.group("unit") or "s").lower()
+        if unit == "s":
+            return timedelta(seconds=amount)
+        if unit == "m":
+            return timedelta(minutes=amount)
+        if unit == "h":
+            return timedelta(hours=amount)
+        if unit == "d":
+            return timedelta(days=amount)
+
+    parts = raw_value.split(":")
+    if len(parts) == 3 and all(part.isdigit() for part in parts):
+        hours, minutes, seconds = (int(part) for part in parts)
+        return timedelta(hours=hours, minutes=minutes, seconds=seconds)
+
+    raise RuntimeError(
+        "PERMISSION_TABLE_CACHE_TTL must be a duration like 60, 60s, 5m, 1h, 1d, or HH:MM:SS."
+    )
+
+
 def load_settings() -> Settings:
     bot_token = os.environ.get("BOT_TOKEN")
     if not bot_token:
@@ -71,7 +87,6 @@ def load_settings() -> Settings:
     if not database_url:
         raise RuntimeError("DATABASE_URL is required.")
 
-    legacy_price_id = os.environ.get("STRIPE_PRICE_ID")
     return Settings(
         bot_token=bot_token,
         database_url=database_url,
@@ -87,20 +102,15 @@ def load_settings() -> Settings:
             if os.environ.get("ADMIN_USER_ID")
             else None
         ),
-        admin_telegram_chat_id=(
-            int(os.environ["ADMIN_TELEGRAM_CHAT_ID"])
-            if os.environ.get("ADMIN_TELEGRAM_CHAT_ID")
-            else None
+        permission_table_cache_ttl=_parse_duration(
+            os.environ.get("PERMISSION_TABLE_CACHE_TTL"),
+            default=timedelta(seconds=60),
         ),
         enabled_premium_features=parse_feature_list(
             os.environ.get("ENABLED_PREMIUM_FEATURES", DEFAULT_ENABLED_PREMIUM_FEATURES)
         ),
         stripe_secret_key=os.environ.get("STRIPE_SECRET_KEY"),
         stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET"),
-        stripe_price_id_monthly=os.environ.get("STRIPE_PRICE_ID_MONTHLY") or legacy_price_id,
-        stripe_price_id_quarterly=os.environ.get("STRIPE_PRICE_ID_QUARTERLY"),
-        stripe_price_id_semiannual=os.environ.get("STRIPE_PRICE_ID_SEMIANNUAL"),
-        stripe_price_id_yearly=os.environ.get("STRIPE_PRICE_ID_YEARLY"),
         app_base_url=_normalise_base_url(os.environ.get("APP_BASE_URL")),
     )
 

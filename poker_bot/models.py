@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import sqlalchemy as sa
-from sqlalchemy import JSON, DateTime, ForeignKey, Numeric, String, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -27,6 +27,37 @@ class TelegramUserModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     subscription: Mapped["UserSubscriptionModel | None"] = relationship(back_populates="user", uselist=False)
+
+
+class ChatAdminPermissionModel(Base):
+    __tablename__ = "chat_admin_permissions"
+    __table_args__ = (
+        UniqueConstraint("telegram_user_id", "chat_id", name="uq_chat_admin_permission_user_chat"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    telegram_user_id: Mapped[int] = mapped_column(sa.BigInteger(), index=True)
+    chat_id: Mapped[int] = mapped_column(sa.BigInteger(), index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean(), default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class SubscriptionPlanModel(Base):
+    __tablename__ = "subscription_plans"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    alias: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    billing_period: Mapped[str] = mapped_column(String(32), index=True)
+    stripe_price_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean(), default=True, index=True)
+    licensed_chats_limit: Mapped[int] = mapped_column(default=1)
+    closed_games_30d_limit: Mapped[int] = mapped_column(default=50)
+    unique_players_30d_limit: Mapped[int] = mapped_column(default=30)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class ChatGameModel(Base):

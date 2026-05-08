@@ -12,6 +12,7 @@ from poker_bot.domain import Game, settle_direct, settle_hub
 from poker_bot.exporting import build_game_csv
 from poker_bot.formatting import eur
 from poker_bot.i18n import tr
+from poker_bot.billing import PAYMENT_PROBLEM_SUBSCRIPTION_STATUSES
 from poker_bot.notifications import AdminRequestNotification
 from poker_bot.parsing import normalize_name, parse_line_with_buyin_entries, parse_number_only
 from poker_bot.rendering import (
@@ -36,6 +37,20 @@ def _chat_id(update: Update) -> int:
     if chat is None:
         raise ValueError(tr("missing_chat"))
     return chat.id
+
+
+def _is_private_chat(update: Update) -> bool:
+    chat = update.effective_chat
+    return chat is not None and chat.type == "private"
+
+
+def _is_group_chat(update: Update) -> bool:
+    chat = update.effective_chat
+    return chat is not None and chat.type in {"group", "supergroup"}
+
+
+def _is_super_admin_update(update: Update) -> bool:
+    return get_services().entitlements.is_super_admin(_telegram_user_id(update))
 
 
 def _message(update: Update):
@@ -126,9 +141,10 @@ def _remaining_free_games(chat_id: int) -> int:
 def _limits_text(update: Update, subscription=None, user_id: int | None = None) -> str:
     services = get_services()
     user_id = _telegram_user_id(update) if user_id is None else user_id
-    if services.entitlements.has_premium_access(user_id, subscription):
+    chat_id = _chat_id(update)
+    if services.entitlements.is_billing_exempt(user_id, chat_id) or services.billing.chat_has_active_subscription(chat_id):
         return ""
-    return tr("limits_status_free_only", free_games_left=_remaining_free_games(_chat_id(update)))
+    return tr("limits_status_free_only", free_games_left=_remaining_free_games(chat_id))
 
 
 def _join_text(parts: list[str]) -> str:
@@ -139,24 +155,27 @@ def _can_start_new_game(update: Update) -> tuple[bool, str | None]:
     services = get_services()
     chat_id = _chat_id(update)
     user_id = _telegram_user_id(update)
+    if _is_private_chat(update) and not services.entitlements.is_super_admin(user_id):
+        return False, tr("private_chat_info_board")
+    if not _is_group_chat(update) and not services.entitlements.is_super_admin(user_id):
+        return False, tr("group_chat_required")
     if user_id is None:
         return False, _join_text([tr("subscription_required_new_game"), _limits_text(update)])
 
-    if services.entitlements.is_billing_exempt(user_id):
+    if services.entitlements.is_billing_exempt(user_id, chat_id):
         return True, None
 
-    subscription = services.billing.refresh_subscription(user_id) if services.billing.enabled else services.billing.get_subscription(user_id)
-    if services.entitlements.has_premium_access(user_id, subscription):
+    if services.billing.chat_has_active_subscription(chat_id):
         return True, None
 
     if services.billing.chat_has_subscription_history(chat_id):
-        return False, _join_text([tr("subscription_required_after_subscription"), _limits_text(update, subscription, user_id)])
+        return False, _join_text([tr("subscription_required_after_subscription"), _limits_text(update, None, user_id)])
 
     if _remaining_free_games(chat_id) > 0:
         return True, None
 
-    if not services.entitlements.has_premium_access(user_id, subscription):
-        return False, _join_text([tr("subscription_required_new_game"), _limits_text(update, subscription, user_id)])
+    if not services.billing.chat_has_active_subscription(chat_id):
+        return False, _join_text([tr("subscription_required_new_game"), _limits_text(update, None, user_id)])
 
     return True, None
 
@@ -164,10 +183,11 @@ def _can_start_new_game(update: Update) -> tuple[bool, str | None]:
 def _subscription_text(update: Update, subscription, user_id: int | None = None) -> str:
     services = get_services()
     user_id = _telegram_user_id(update) if user_id is None else user_id
-    if services.entitlements.is_billing_exempt(user_id):
+    chat_id = _chat_id(update)
+    if services.entitlements.is_billing_exempt(user_id, chat_id):
         return tr("subscription_status_admin")
 
-    if services.entitlements.has_premium_access(user_id, subscription):
+    if subscription and subscription.is_active and subscription.requested_chat_id == chat_id:
         plan_name = tr(f"plan_{subscription.plan_code or 'monthly'}")
         if subscription.current_period_end is not None:
             return "\n\n".join(
@@ -181,9 +201,11 @@ def _subscription_text(update: Update, subscription, user_id: int | None = None)
             )
         return tr("subscription_status_active_open", plan=plan_name)
 
+    if subscription is None:
+        return _join_text([tr("subscription_status_inactive"), _limits_text(update, subscription)])
     if subscription.status == "pending_activation":
         return _join_text([tr("subscription_status_pending"), _limits_text(update, subscription)])
-    if subscription.status == "payment_problem":
+    if subscription.status in PAYMENT_PROBLEM_SUBSCRIPTION_STATUSES:
         return _join_text([tr("subscription_status_payment_problem"), _limits_text(update, subscription)])
     if subscription.status == "canceled":
         return _join_text([tr("subscription_status_canceled"), _limits_text(update, subscription)])
@@ -209,7 +231,7 @@ def _get_subscription_for_update(update: Update):
     user_id = _telegram_user_id(update)
     if user_id is None:
         return None
-    if services.entitlements.is_billing_exempt(user_id):
+    if services.entitlements.is_billing_exempt(user_id, _chat_id(update)):
         return None
     if services.billing.enabled:
         return services.billing.refresh_subscription(user_id)
@@ -219,10 +241,17 @@ def _get_subscription_for_update(update: Update):
 def _has_premium(update: Update) -> bool:
     services = get_services()
     user_id = _telegram_user_id(update)
-    if services.entitlements.is_billing_exempt(user_id):
+    chat_id = _chat_id(update)
+    if services.entitlements.is_billing_exempt(user_id, chat_id):
         return True
-    subscription = _get_subscription_for_update(update)
-    return services.entitlements.has_premium_access(user_id, subscription)
+    return services.billing.chat_has_active_subscription(chat_id)
+
+
+async def _reply_private_info_for_non_admin(update: Update) -> bool:
+    if _is_private_chat(update) and not _is_super_admin_update(update):
+        await _message(update).reply_text(tr("private_chat_info_board"), parse_mode=ParseMode.HTML)
+        return True
+    return False
 
 
 def _premium_feature_enabled(feature: str) -> bool:
@@ -230,6 +259,68 @@ def _premium_feature_enabled(feature: str) -> bool:
 
 
 def _help_text() -> str:
+    lines = [
+        "<b>Покерные расчеты в Telegram</b>",
+        "",
+        "<b>Где работает бот</b>",
+        "Игровые команды работают в группах. В личной переписке для обычных пользователей доступна только эта справка.",
+        "Подписка покупается из той группы, где должен работать бот, и действует только в этой группе.",
+        "Играть в оплаченной группе могут все участники. Управлять подпиской может только пользователь, который ее оформил.",
+        "",
+        "<b>Игра</b>",
+        "/newgame - новая игра",
+        "/newgame i - интерактивный сбор входов и выходов",
+        "/finish - перейти от входов к выходам в интерактивной игре",
+        "/restart - пересобрать интерактивную игру из сообщений",
+        "/startgame &lt;название&gt; - новая игра из сохраненной компании",
+    ]
+    if _premium_feature_enabled("revanche"):
+        lines.append("/revanche - новая игра с составом прошлой закрытой игры")
+    if _premium_feature_enabled("savegroup"):
+        lines.append("/savegroup &lt;название&gt; - сохранить текущий состав")
+    if _premium_feature_enabled("groups"):
+        lines.append("/groups - список сохраненных компаний")
+    lines.extend(
+        [
+            "/add &lt;строка&gt; - добавить или обновить игрока",
+            "/addblock - добавить игроков блоком",
+            "/remove @user - удалить игрока",
+            "/removeAll - удалить всех игроков",
+            "/list - текущая таблица",
+        ]
+    )
+    if _premium_feature_enabled("analyze"):
+        lines.append("/analyze - таблица и premium-анализ расхождения")
+    lines.append("/calc [direct|hub] [@hub] - закрыть игру и посчитать переводы")
+    if _premium_feature_enabled("history"):
+        lines.append("/history [N] - история последних игр")
+    if _premium_feature_enabled("export_csv"):
+        lines.append("/export_csv - выгрузить последнюю закрытую игру в CSV")
+    lines.extend(
+        [
+            "",
+            "<b>Подписка</b>",
+            "/sub - планы подписки",
+            "/sub 1m, /sub 3m, /sub 6m, /sub 1y - оформить подписку для этого чата",
+            "/sub_status - статус подписки этого чата",
+            "/sub_cancel - отменить подписку, только владелец",
+        ]
+    )
+    if _premium_feature_enabled("sub_refund"):
+        lines.append("/sub_refund - запросить рефанд, только владелец")
+    lines.extend(
+        [
+            "",
+            "<b>Форматы ввода</b>",
+            "<code>/add @ivan 100</code>",
+            "<code>/add @ivan 100, 20</code>",
+            "<code>/add @ivan 10+20+20</code>",
+            "<code>/add @ivan 10+20+20, 50</code>",
+            "В /addblock можно писать по одному игроку на строку.",
+        ]
+    )
+    return "\n".join(lines)
+
     lines = [
         "<b>Бот расчета взаиморасчетов для покера</b>",
         "",
@@ -308,44 +399,75 @@ def _interactive_player_name(update: Update) -> str:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _sync_user(update)
-    await _message(update).reply_text(tr("start_text"), parse_mode=ParseMode.HTML)
+    if await _reply_private_info_for_non_admin(update):
+        return
+    await _message(update).reply_text(_help_text(), parse_mode=ParseMode.HTML)
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _sync_user(update)
+    if await _reply_private_info_for_non_admin(update):
+        return
     await _message(update).reply_text(_help_text(), parse_mode=ParseMode.HTML)
 
 
 async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     services = get_services()
     user = update.effective_user
+    message = _message(update)
+    chat_id = _chat_id(update)
     if user is None:
-        await _message(update).reply_text(tr("subscription_checkout_unavailable"))
+        await message.reply_text(tr("subscription_checkout_unavailable"))
+        return
+
+    if await _reply_private_info_for_non_admin(update):
+        return
+    if not _is_group_chat(update) and not services.entitlements.is_super_admin(user.id):
+        await message.reply_text(tr("group_chat_required"))
         return
 
     if not services.billing.enabled:
-        await _message(update).reply_text(tr("subscription_checkout_unavailable"))
+        await message.reply_text(tr("subscription_checkout_unavailable"))
+        return
+
+    chat_subscription = services.billing.get_chat_subscription(chat_id)
+    if chat_subscription is not None and chat_subscription.telegram_user_id != user.id:
+        await message.reply_text(tr("subscription_chat_already_bound"))
+        return
+
+    user_subscription = services.billing.refresh_subscription(user.id) if services.billing.enabled else services.billing.get_subscription(user.id)
+    if (
+        user_subscription.status in {"active", "pending_activation", *PAYMENT_PROBLEM_SUBSCRIPTION_STATUSES}
+        and user_subscription.requested_chat_id is not None
+        and user_subscription.requested_chat_id != chat_id
+        and not services.entitlements.is_super_admin(user.id)
+    ):
+        await message.reply_text(tr("subscription_user_bound_to_other_chat"))
         return
 
     plan_code = _parse_plan_code(context.args)
     if plan_code is None:
-        await _message(update).reply_text(_plan_catalog_text())
+        await message.reply_text(_plan_catalog_text())
         return
 
-    checkout_url = services.billing.create_checkout_session(
-        telegram_user_id=user.id,
-        chat_id=_chat_id(update),
-        plan_code=plan_code,
-        username=user.username,
-        first_name=user.first_name,
-    )
+    try:
+        checkout_url = services.billing.create_checkout_session(
+            telegram_user_id=user.id,
+            chat_id=chat_id,
+            plan_code=plan_code,
+            username=user.username,
+            first_name=user.first_name,
+        )
+    except ValueError:
+        await message.reply_text(tr("subscription_plan_unavailable"))
+        return
     services.store.record_product_event(
         "subscription_checkout_started",
         telegram_user_id=user.id,
-        chat_id=_chat_id(update),
+        chat_id=chat_id,
         properties={"plan_code": plan_code},
     )
-    await _message(update).reply_text(
+    await message.reply_text(
         tr("subscription_checkout_created", plan=tr(f"plan_{plan_code}"), url=checkout_url)
     )
 
@@ -353,6 +475,8 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def subscription_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     services = get_services()
     message = _message(update)
+    if await _reply_private_info_for_non_admin(update):
+        return
     user_id = _sync_user(update)
     if user_id is None:
         await message.reply_text(
@@ -360,7 +484,16 @@ async def subscription_status(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
-    subscription = _get_subscription_for_update(update)
+    chat_subscription = services.billing.get_chat_subscription(_chat_id(update))
+    if chat_subscription is not None and chat_subscription.telegram_user_id != user_id:
+        await message.reply_text(
+            tr("subscription_status_chat_active")
+            if chat_subscription.is_active
+            else tr("subscription_status_chat_pending")
+        )
+        return
+
+    subscription = chat_subscription or _get_subscription_for_update(update)
     await message.reply_text(_subscription_text(update, subscription, user_id))
 
 
@@ -369,6 +502,8 @@ async def cancel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE
     message = _message(update)
     user = update.effective_user
     user_id = _sync_user(update)
+    if await _reply_private_info_for_non_admin(update):
+        return
     if user is None or user_id is None:
         await message.reply_text(tr("subscription_cancel_unavailable"))
         return
@@ -377,8 +512,13 @@ async def cancel_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE
         await message.reply_text(tr("subscription_cancel_unavailable"))
         return
 
+    chat_subscription = services.billing.get_chat_subscription(_chat_id(update))
+    if chat_subscription is None or chat_subscription.telegram_user_id != user_id:
+        await message.reply_text(tr("subscription_owner_only"))
+        return
+
     subscription = services.billing.refresh_subscription(user_id)
-    if subscription.status not in {"active", "pending_activation", "payment_problem"}:
+    if subscription.status not in {"active", "pending_activation", *PAYMENT_PROBLEM_SUBSCRIPTION_STATUSES}:
         await message.reply_text(tr("subscription_cancel_no_subscription"))
         return
 
@@ -413,12 +553,19 @@ async def refund_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE
     message = _message(update)
     user = update.effective_user
     user_id = _sync_user(update)
+    if await _reply_private_info_for_non_admin(update):
+        return
     if user is None or user_id is None:
         await message.reply_text(tr("subscription_refund_unavailable"))
         return
 
+    chat_subscription = services.billing.get_chat_subscription(_chat_id(update))
+    if chat_subscription is None or chat_subscription.telegram_user_id != user_id:
+        await message.reply_text(tr("subscription_owner_only"))
+        return
+
     subscription = services.billing.refresh_subscription(user_id) if services.billing.enabled else services.billing.get_subscription(user_id)
-    if subscription.status not in {"active", "pending_activation", "payment_problem", "canceled"}:
+    if subscription.status not in {"active", "pending_activation", "canceled", *PAYMENT_PROBLEM_SUBSCRIPTION_STATUSES}:
         await message.reply_text(tr("subscription_refund_no_subscription"))
         return
 
@@ -481,6 +628,8 @@ async def newgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def finish_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     _sync_user(update)
     services = get_services()
     message = _message(update)
@@ -496,6 +645,8 @@ async def finish_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def restart_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     _sync_user(update)
     services = get_services()
     message = _message(update)
@@ -511,6 +662,8 @@ async def restart_interactive(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def savegroup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     _sync_user(update)
     services = get_services()
     message = _message(update)
@@ -536,6 +689,8 @@ async def savegroup(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def groups_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     _sync_user(update)
     message = _message(update)
     try:
@@ -547,6 +702,8 @@ async def groups_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     user_id = _sync_user(update)
     services = get_services()
     message = _message(update)
@@ -594,6 +751,8 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def revanche(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     user_id = _sync_user(update)
     services = get_services()
     message = _message(update)
@@ -631,6 +790,8 @@ async def revanche(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     _sync_user(update)
     services = get_services()
     message = _message(update)
@@ -662,6 +823,8 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def addblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     _sync_user(update)
     services = get_services()
     message = _message(update)
@@ -712,6 +875,8 @@ async def addblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     _sync_user(update)
     services = get_services()
     message = _message(update)
@@ -738,6 +903,8 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def remove_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     _sync_user(update)
     services = get_services()
     message = _message(update)
@@ -757,6 +924,8 @@ async def remove_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     _sync_user(update)
     services = get_services()
     session = services.store.get_latest(_chat_id(update))
@@ -768,6 +937,8 @@ async def list_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     _sync_user(update)
     services = get_services()
     session = services.store.get_latest(_chat_id(update))
@@ -786,6 +957,8 @@ async def analyze_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     _sync_user(update)
     services = get_services()
     try:
@@ -798,6 +971,8 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     user_id = _sync_user(update)
     services = get_services()
     message = _message(update)
@@ -876,6 +1051,8 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def export_csv_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     _sync_user(update)
     services = get_services()
     message = _message(update)
@@ -896,6 +1073,8 @@ async def export_csv_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def interactive_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
     _sync_user(update)
     services = get_services()
     message = _message(update)

@@ -8,7 +8,7 @@ from fastapi.responses import HTMLResponse
 from telegram import Update
 from telegram.ext import ApplicationBuilder
 
-from poker_bot.access import EntitlementPolicy
+from poker_bot.access import EntitlementPolicy, PermissionTableCache
 from poker_bot.billing import StripeBillingService
 from poker_bot.config import Settings, load_settings
 from poker_bot.db import build_engine, build_session_factory
@@ -35,9 +35,12 @@ async def lifespan(app: FastAPI):
             settings=settings,
             store=DatabaseStore(session_factory),
             billing=StripeBillingService(settings, session_factory),
-            entitlements=EntitlementPolicy(settings.admin_user_id),
+            entitlements=EntitlementPolicy(
+                admin_user_id=settings.admin_user_id,
+                permission_cache=PermissionTableCache(session_factory, settings.permission_table_cache_ttl),
+            ),
             features=FeatureFlags(settings.enabled_premium_features),
-            admin_notifier=TelegramAdminNotifier(settings.admin_telegram_chat_id),
+            admin_notifier=TelegramAdminNotifier(settings.admin_user_id),
             user_notifier=TelegramUserNotifier(),
         )
     )

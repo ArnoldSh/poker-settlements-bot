@@ -29,21 +29,21 @@ class AdminSystemNotification:
 
 
 class TelegramAdminNotifier:
-    def __init__(self, admin_chat_id: int | None) -> None:
-        self.admin_chat_id = admin_chat_id
+    def __init__(self, admin_user_id: int | None) -> None:
+        self.admin_user_id = admin_user_id
 
     @property
     def enabled(self) -> bool:
-        return self.admin_chat_id is not None
+        return self.admin_user_id is not None
 
     async def notify_request(self, bot: Bot, payload: AdminRequestNotification) -> bool:
-        if self.admin_chat_id is None:
+        if self.admin_user_id is None:
             return False
 
         username = payload.username or f"id:{payload.telegram_user_id}"
         request_label = "отмену" if payload.request_kind == "cancel" else "рефанд"
         await bot.send_message(
-            chat_id=self.admin_chat_id,
+            chat_id=self.admin_user_id,
             text=(
                 f"Запрос на ручную {request_label} подписки\n"
                 f"Пользователь: {username}\n"
@@ -58,10 +58,10 @@ class TelegramAdminNotifier:
         return True
 
     async def notify_system(self, bot: Bot, payload: AdminSystemNotification) -> bool:
-        if self.admin_chat_id is None:
+        if self.admin_user_id is None:
             return False
 
-        await bot.send_message(chat_id=self.admin_chat_id, text=payload.text)
+        await bot.send_message(chat_id=self.admin_user_id, text=payload.text)
         return True
 
 

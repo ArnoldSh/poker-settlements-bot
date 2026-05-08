@@ -39,17 +39,15 @@ Stripe:
 
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
-- `STRIPE_PRICE_ID_MONTHLY`
-- `STRIPE_PRICE_ID_QUARTERLY`
-- `STRIPE_PRICE_ID_SEMIANNUAL`
-- `STRIPE_PRICE_ID_YEARLY`
+
+Stripe price ids are stored in the `subscription_plans` database table and seeded by migrations.
 
 Optional:
 
 - `HOST=0.0.0.0`
 - `PORT` is usually injected by Railway automatically
-- `ADMIN_USER_ID` Telegram user id that bypasses paid limits and premium feature gates
-- `ADMIN_TELEGRAM_CHAT_ID` for manual subscription cancellation notifications
+- `ADMIN_USER_ID` Telegram user id that acts as the super-admin in private bot chat and every other chat; system admin notifications are sent to this user's private bot chat
+- `PERMISSION_TABLE_CACHE_TTL` cache lifetime for chat admin permissions, for example `60s`, `5m`, `1h`, `1d`, or `HH:MM:SS`
 - `ENABLED_PREMIUM_FEATURES` comma-separated premium feature toggles to enable. Defaults to all guarded premium features: `revanche,savegroup,groups,analyze,history,export_csv,sub_refund`.
 
 ## 4. Database Migration

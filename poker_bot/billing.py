@@ -10,11 +10,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from poker_bot.config import Settings
 from poker_bot.i18n import tr
-from poker_bot.models import StripeEventModel, TelegramUserModel, UserSubscriptionModel
+from poker_bot.models import StripeEventModel, SubscriptionPlanModel, TelegramUserModel, UserSubscriptionModel
 from poker_bot.notifications import AdminSystemNotification, UserChatNotification
 
 ACTIVE_SUBSCRIPTION_STATUSES = {"active"}
 PENDING_SUBSCRIPTION_STATUSES = {"pending_activation"}
+PAYMENT_PROBLEM_SUBSCRIPTION_STATUSES = {"past_due", "paused", "unpaid"}
 SUBSCRIPTION_PLAN_CODES = ("monthly", "quarterly", "semiannual", "yearly")
 logger = logging.getLogger(__name__)
 
@@ -108,8 +109,30 @@ class StripeBillingService:
 
             return self._snapshot(subscription)
 
+    def get_chat_subscription(self, chat_id: int) -> SubscriptionSnapshot | None:
+        with self.session_factory() as session:
+            subscription = session.scalar(
+                select(UserSubscriptionModel)
+                .where(
+                    UserSubscriptionModel.requested_chat_id == chat_id,
+                    UserSubscriptionModel.status.in_(
+                        ACTIVE_SUBSCRIPTION_STATUSES
+                        | PENDING_SUBSCRIPTION_STATUSES
+                        | PAYMENT_PROBLEM_SUBSCRIPTION_STATUSES
+                    ),
+                )
+                .order_by(UserSubscriptionModel.updated_at.desc())
+            )
+            if subscription is None:
+                return None
+            return self._snapshot(subscription)
+
+    def chat_has_active_subscription(self, chat_id: int) -> bool:
+        snapshot = self.get_chat_subscription(chat_id)
+        return bool(snapshot and snapshot.is_active)
+
     def chat_has_subscription_history(self, chat_id: int) -> bool:
-        historical_statuses = {"active", "payment_problem", "canceled", "expired"}
+        historical_statuses = {"active", "past_due", "paused", "unpaid", "canceled", "expired"}
         with self.session_factory() as session:
             return (
                 session.scalar(
@@ -553,20 +576,37 @@ class StripeBillingService:
         return subscription
 
     def available_plan_codes(self) -> list[str]:
-        available_price_ids = self.settings.stripe_price_ids
-        return [plan_code for plan_code in SUBSCRIPTION_PLAN_CODES if plan_code in available_price_ids]
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(SubscriptionPlanModel)
+                .where(
+                    SubscriptionPlanModel.is_active.is_(True),
+                    SubscriptionPlanModel.stripe_price_id.is_not(None),
+                )
+                .order_by(SubscriptionPlanModel.id)
+            ).all()
+            return [row.code for row in rows]
 
     def available_plan_aliases(self) -> list[tuple[str, str]]:
-        aliases_by_plan_code = {
-            "monthly": "1m",
-            "quarterly": "3m",
-            "semiannual": "6m",
-            "yearly": "1y",
-        }
-        return [(plan_code, aliases_by_plan_code[plan_code]) for plan_code in self.available_plan_codes()]
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(SubscriptionPlanModel)
+                .where(
+                    SubscriptionPlanModel.is_active.is_(True),
+                    SubscriptionPlanModel.stripe_price_id.is_not(None),
+                )
+                .order_by(SubscriptionPlanModel.id)
+            ).all()
+            return [(row.code, row.alias) for row in rows]
 
     def _resolve_price_id(self, plan_code: str) -> str:
-        price_id = self.settings.stripe_price_ids.get(plan_code)
+        with self.session_factory() as session:
+            price_id = session.scalar(
+                select(SubscriptionPlanModel.stripe_price_id).where(
+                    SubscriptionPlanModel.code == plan_code,
+                    SubscriptionPlanModel.is_active.is_(True),
+                )
+            )
         if price_id:
             return price_id
         raise ValueError(f"Unsupported subscription plan: {plan_code}")
@@ -577,8 +617,8 @@ class StripeBillingService:
             return "active"
         if provider_status == "incomplete":
             return "pending_activation"
-        if provider_status in {"past_due", "unpaid", "paused"}:
-            return "payment_problem"
+        if provider_status in PAYMENT_PROBLEM_SUBSCRIPTION_STATUSES:
+            return provider_status
         if provider_status == "canceled":
             return "canceled"
         if provider_status == "incomplete_expired":
@@ -595,14 +635,28 @@ class StripeBillingService:
     def _extract_plan_code(self, payload) -> str | None:
         metadata = payload.get("metadata", {}) or {}
         plan_code = metadata.get("plan_code")
-        if plan_code in SUBSCRIPTION_PLAN_CODES:
+        if plan_code and self._plan_code_exists(plan_code):
             return plan_code
 
         price_id = self._extract_price_id(payload)
-        for candidate, candidate_price_id in self.settings.stripe_price_ids.items():
-            if candidate_price_id == price_id:
-                return candidate
-        return None
+        if price_id is None:
+            return None
+        with self.session_factory() as session:
+            return session.scalar(
+                select(SubscriptionPlanModel.code).where(SubscriptionPlanModel.stripe_price_id == price_id)
+            )
+
+    def _plan_code_exists(self, plan_code: str) -> bool:
+        with self.session_factory() as session:
+            return (
+                session.scalar(
+                    select(SubscriptionPlanModel.id).where(
+                        SubscriptionPlanModel.code == plan_code,
+                        SubscriptionPlanModel.is_active.is_(True),
+                    )
+                )
+                is not None
+            )
 
     @staticmethod
     def _ts_to_dt(value: int | None) -> datetime | None:
@@ -697,7 +751,7 @@ class StripeBillingService:
                         ),
                     )
                 ], []
-            if previous.status == "active" and current.status == "payment_problem":
+            if previous.status == "active" and current.status in PAYMENT_PROBLEM_SUBSCRIPTION_STATUSES:
                 return [UserChatNotification(chat_id=chat_id, text=tr("subscription_event_paused"))], []
             if previous.status == "active" and current.status in {"canceled", "expired"}:
                 return [UserChatNotification(chat_id=chat_id, text=tr("subscription_event_canceled"))], []

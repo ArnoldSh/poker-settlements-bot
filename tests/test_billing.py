@@ -23,11 +23,11 @@ class BillingStatusMappingTests(unittest.TestCase):
             "pending_activation",
         )
 
-    def test_problem_provider_status_maps_to_payment_problem(self) -> None:
-        self.assertEqual(
-            StripeBillingService._map_provider_status("past_due"),
-            "payment_problem",
-        )
+    def test_past_due_provider_status_maps_to_past_due(self) -> None:
+        self.assertEqual(StripeBillingService._map_provider_status("past_due"), "past_due")
+
+    def test_unpaid_provider_status_maps_to_unpaid(self) -> None:
+        self.assertEqual(StripeBillingService._map_provider_status("unpaid"), "unpaid")
 
     def test_incomplete_expired_maps_to_expired(self) -> None:
         self.assertEqual(
@@ -35,11 +35,8 @@ class BillingStatusMappingTests(unittest.TestCase):
             "expired",
         )
 
-    def test_paused_provider_status_maps_to_payment_problem(self) -> None:
-        self.assertEqual(
-            StripeBillingService._map_provider_status("paused"),
-            "payment_problem",
-        )
+    def test_paused_provider_status_maps_to_paused(self) -> None:
+        self.assertEqual(StripeBillingService._map_provider_status("paused"), "paused")
 
     def test_deleted_subscription_builds_user_and_admin_notifications(self) -> None:
         from poker_bot.billing import SubscriptionSnapshot
