@@ -278,7 +278,7 @@ def _plan_catalog_text() -> str:
             tr(
                 "subscription_plan_item_priced",
                 code=item.alias,
-                label=tr(f"plan_{item.code}"),
+                period=tr(f"plan_period_{item.code}"),
                 price=item.price or tr("price_unknown"),
             )
         )
@@ -293,7 +293,7 @@ def _limit_boost_catalog_text() -> str:
             tr(
                 "limit_boost_item",
                 code=item.alias,
-                label=tr(f"limit_boost_{item.code}"),
+                period=tr(f"limit_boost_period_{item.code}"),
                 price=item.price or tr("price_unknown"),
             )
         )
@@ -333,6 +333,72 @@ def _premium_feature_enabled(feature: str) -> bool:
 
 
 def _help_text() -> str:
+    plan_lines = _plan_catalog_text().splitlines()[1:]
+    boost_lines = _limit_boost_catalog_text().splitlines()[1:]
+
+    lines = [
+        "<b>Покерные расчеты в Telegram</b>",
+        "",
+        "<b>Где работает бот</b>",
+        "Игровые команды работают в группах. В личной переписке для обычных пользователей доступна только справка.",
+        "Подписка покупается из той группы, где должен работать бот, и действует только в этой группе.",
+        "Играть в оплаченной группе могут все участники. Управлять подпиской может только пользователь, который ее оформил.",
+        "",
+        "<b>Обычный режим</b>",
+        "/newgame - новая пустая игра",
+        "",
+        "/add &lt;строка&gt; - добавить или обновить игрока",
+        "/addblock - добавить игроков блоком",
+        "/remove @user - удалить игрока",
+        "/removeAll - удалить всех игроков",
+        "",
+        "<b>Интерактивный режим</b>",
+        "/newgame i - начать сбор входов и выходов сообщениями",
+        "/finish - завершить этап входов и перейти к выходам",
+        "/restart - пересобрать интерактивную игру из сообщений",
+        "",
+        "<b>Итоги и анализ</b>",
+        "/list - текущая таблица",
+    ]
+    if _premium_feature_enabled("analyze"):
+        lines.append("/analyze - таблица и анализ расхождения")
+    lines.append("/calc [direct|hub] [@hub] - закрыть игру и посчитать переводы")
+    if _premium_feature_enabled("history"):
+        lines.append("/history [N] - история последних игр")
+    if _premium_feature_enabled("export_csv"):
+        lines.append("/export_csv - выгрузить последнюю закрытую игру в CSV")
+
+    lines.extend(
+        [
+            "",
+            "<b>Подписки и лимиты</b>",
+            "/sub - планы подписки",
+            *plan_lines,
+            "",
+            "/sub_status - статус подписки этого чата",
+            "/sub_cancel - отменить подписку, только владелец",
+        ]
+    )
+    if _premium_feature_enabled("sub_refund"):
+        lines.append("/sub_refund - запросить рефанд, только владелец")
+    lines.extend(
+        [
+            "",
+            "/boost - пакеты увеличения лимитов x2",
+            *boost_lines,
+            "",
+            "/limits - текущие лимиты и использование за 30 дней",
+            "",
+            "<b>Форматы ввода</b>",
+            "<code>/add @ivan 100</code>",
+            "<code>/add @ivan 100, 20</code>",
+            "<code>/add @ivan 10+20+20</code>",
+            "<code>/add @ivan 10+20+20, 50</code>",
+            "В /addblock можно писать по одному игроку на строку.",
+        ]
+    )
+    return "\n".join(lines)
+
     lines = [
         "<b>Покерные расчеты в Telegram</b>",
         "",
@@ -510,6 +576,11 @@ async def limit_boost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await message.reply_text(tr("limit_boost_checkout_unavailable"))
         return
 
+    boost_code = parse_limit_boost_code(context.args)
+    if boost_code is None:
+        await message.reply_text(_limit_boost_catalog_text())
+        return
+
     chat_subscription = services.billing.get_chat_subscription(chat_id)
     if chat_subscription is None or not chat_subscription.is_active:
         await message.reply_text(tr("limit_boost_active_subscription_required"))
@@ -523,11 +594,6 @@ async def limit_boost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await message.reply_text(
             tr("limit_boost_already_active", expires_at=active_boost.expires_at.strftime("%Y-%m-%d %H:%M UTC"))
         )
-        return
-
-    boost_code = parse_limit_boost_code(context.args)
-    if boost_code is None:
-        await message.reply_text(_limit_boost_catalog_text())
         return
 
     try:

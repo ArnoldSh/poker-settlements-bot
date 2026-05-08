@@ -21,6 +21,18 @@ class Catalog:
 RU_CATALOG = Catalog(
     locale="ru",
     messages={
+        "limit_boost_choose": "Выберите пакет увеличения лимитов командой:",
+        "limit_boost_item": "/boost {code} - boost x2 на {period} за {price}",
+        "subscription_plan_choose": "Выберите план подписки командой:",
+        "subscription_plan_item_priced": "/sub {code} - подписка на {period} за {price}",
+        "plan_period_monthly": "1 месяц",
+        "plan_period_quarterly": "3 месяца",
+        "plan_period_semiannual": "полгода",
+        "plan_period_yearly": "год",
+        "limit_boost_period_boost_30d": "1 месяц",
+        "limit_boost_period_boost_90d": "3 месяца",
+        "limit_boost_period_boost_180d": "полгода",
+        "limit_boost_period_boost_365d": "год",
         "limits_status_active_boost": "Limit boost x2 активен до {expires_at}.",
         "limits_status_no_boost": "Limit boost не активен. Увеличить лимиты можно через /boost.",
         "limit_boost_choose": (
