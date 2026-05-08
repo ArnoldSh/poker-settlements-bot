@@ -21,6 +21,30 @@ class Catalog:
 RU_CATALOG = Catalog(
     locale="ru",
     messages={
+        "limits_status_active_boost": "Limit boost x2 активен до {expires_at}.",
+        "limits_status_no_boost": "Limit boost не активен. Увеличить лимиты можно через /boost.",
+        "limit_boost_choose": (
+            "Выберите limit boost x2 для этого чата:\n"
+            "/boost 1m\n"
+            "/boost 3m\n"
+            "/boost 6m\n"
+            "/boost 1y"
+        ),
+        "limit_boost_item": "• {label} — {price}: /boost {code}",
+        "price_unknown": "цена уточняется",
+        "subscription_plan_item_priced": "• {label} — {price}: /sub {code}",
+        "limit_boost_boost_30d": "x2 на 30 дней",
+        "limit_boost_boost_90d": "x2 на 90 дней",
+        "limit_boost_boost_180d": "x2 на 180 дней",
+        "limit_boost_boost_365d": "x2 на 365 дней",
+        "limit_boost_checkout_unavailable": "Оплата limit boost пока не настроена. Проверьте конфигурацию Stripe.",
+        "limit_boost_checkout_created": "Купить limit boost ({boost}) можно по ссылке:\n{url}",
+        "limit_boost_active_subscription_required": "Limit boost можно купить только для чата с активной подпиской.",
+        "limit_boost_already_active": "В этом чате уже активен limit boost до {expires_at}.",
+        "limit_boost_already_active_unknown": "В этом чате уже активен limit boost.",
+        "limit_boost_plan_unavailable": "Этот limit boost сейчас недоступен. Используйте /boost, чтобы посмотреть доступные пакеты.",
+        "limit_boost_event_paid": "Limit boost x2 активирован. Он действует до {expires_at}.",
+        "limit_boost_event_refunded": "Limit boost был возвращен и больше не применяется к лимитам чата.",
         "missing_message": "Нужно текстовое сообщение, чтобы я понял команду.",
         "missing_chat": "Не удалось определить чат для этой команды.",
         "missing_user": "Не удалось определить пользователя Telegram.",
@@ -105,6 +129,21 @@ RU_CATALOG = Catalog(
             "Чтобы создать новую игру, нужна активная подписка. Используйте /sub."
         ),
         "limits_status_free_only": "Бесплатных игр в этом чате осталось: {free_games_left}",
+        "limits_status_admin": "Админский доступ активен. Лимиты использования не применяются.",
+        "limits_no_active_subscription": "В этом чате нет активной подписки.",
+        "limits_plan_unavailable": "Не удалось найти лимиты тарифного плана для этого чата.",
+        "limits_status_chat_usage": (
+            "<b>Лимиты чата</b>\n"
+            "План: {plan}\n"
+            "Период: последние 30 дней\n"
+            "Закрытые игры: {closed_games} из {closed_games_limit}\n"
+            "Уникальные игроки в закрытых играх: {unique_players} из {unique_players_limit}\n"
+            "Предупреждение включается с {warning_threshold}% лимита."
+        ),
+        "chat_usage_closed_games_limit_reached": "Лимит новых игр для этого чата исчерпан: {used} из {limit} закрытых игр за последние 30 дней.",
+        "chat_usage_unique_players_limit_reached": "Лимит новых игроков для этого чата исчерпан: {used} из {limit} уникальных игроков в закрытых играх за последние 30 дней.",
+        "chat_usage_closed_games_warning": "Предупреждение: в этом чате использовано {used} из {limit} закрытых игр за последние 30 дней.",
+        "chat_usage_unique_players_warning": "Предупреждение: в этом чате использовано {used} из {limit} уникальных игроков в закрытых играх за последние 30 дней.",
         "subscription_status_active": "Подписка активна: {plan}. Следующее продление или окончание периода: {date}.",
         "subscription_status_active_open": "Подписка активна: {plan}.",
         "subscription_status_admin": "Админский доступ активен. Платные ограничения не применяются.",

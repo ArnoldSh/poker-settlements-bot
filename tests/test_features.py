@@ -16,7 +16,7 @@ class FeatureFlagTests(unittest.TestCase):
         self.assertEqual(parse_feature_list("groups, analyze"), frozenset({"groups", "analyze"}))
 
     def test_only_listed_features_are_enabled(self) -> None:
-        flags = FeatureFlags(enabled_premium_features=frozenset({"history"}))
+        flags = FeatureFlags(enabled_features=frozenset({"history"}))
 
         self.assertTrue(flags.is_enabled("history"))
         self.assertFalse(flags.is_enabled("revanche"))

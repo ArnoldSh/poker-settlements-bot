@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-# Keep this default as the complete list of guarded premium features.
-# New guarded premium commands must be added here so they stay enabled by default.
-DEFAULT_ENABLED_PREMIUM_FEATURES = "revanche,savegroup,groups,analyze,history,export_csv,sub_refund"
+# Keep this default as the complete list of guarded features.
+# New guarded commands must be added here so they stay enabled by default.
+DEFAULT_ENABLED_FEATURES = "revanche,savegroup,groups,analyze,history,export_csv,sub_refund"
 
 
 FEATURE_ALIASES: dict[str, tuple[str, ...]] = {}
@@ -27,7 +27,7 @@ def parse_feature_list(value: str | None) -> frozenset[str]:
 
 @dataclass(frozen=True)
 class FeatureFlags:
-    enabled_premium_features: frozenset[str]
+    enabled_features: frozenset[str]
 
     def is_enabled(self, feature: str) -> bool:
-        return feature in self.enabled_premium_features
+        return feature in self.enabled_features

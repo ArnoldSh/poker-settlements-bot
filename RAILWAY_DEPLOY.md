@@ -47,8 +47,9 @@ Optional:
 - `HOST=0.0.0.0`
 - `PORT` is usually injected by Railway automatically
 - `ADMIN_USER_ID` Telegram user id that acts as the super-admin in private bot chat and every other chat; system admin notifications are sent to this user's private bot chat
-- `PERMISSION_TABLE_CACHE_TTL` cache lifetime for chat admin permissions, for example `60s`, `5m`, `1h`, `1d`, or `HH:MM:SS`
-- `ENABLED_PREMIUM_FEATURES` comma-separated premium feature toggles to enable. Defaults to all guarded premium features: `revanche,savegroup,groups,analyze,history,export_csv,sub_refund`.
+- `PERMISSION_TABLE_CACHE_TTL` cache lifetime for chat admin permissions as an ISO 8601 duration, for example `PT5M`, `PT1H`, or `P1D`. Defaults to `PT1H`.
+- `CHAT_USAGE_WARNING_THRESHOLD` usage ratio for chat limit warnings, greater than `0` and up to `1`. Defaults to `0.8`.
+- `ENABLED_FEATURES` comma-separated feature toggles to enable. Defaults to all guarded features: `revanche,savegroup,groups,analyze,history,export_csv,sub_refund`.
 
 ## 4. Database Migration
 

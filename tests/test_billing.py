@@ -38,6 +38,12 @@ class BillingStatusMappingTests(unittest.TestCase):
     def test_paused_provider_status_maps_to_paused(self) -> None:
         self.assertEqual(StripeBillingService._map_provider_status("paused"), "paused")
 
+    def test_formats_eur_minor_amount(self) -> None:
+        self.assertEqual(StripeBillingService._format_amount(499, "eur"), "€4.99")
+
+    def test_formats_unknown_currency_minor_amount(self) -> None:
+        self.assertEqual(StripeBillingService._format_amount(1199, "usd"), "11.99 USD")
+
     def test_deleted_subscription_builds_user_and_admin_notifications(self) -> None:
         from poker_bot.billing import SubscriptionSnapshot
 

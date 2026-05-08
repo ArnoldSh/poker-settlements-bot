@@ -10,7 +10,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from poker_bot.config import Settings
 from poker_bot.i18n import tr
-from poker_bot.models import StripeEventModel, SubscriptionPlanModel, TelegramUserModel, UserSubscriptionModel
+from poker_bot.models import (
+    ChatLimitBoostModel,
+    LimitBoostProductModel,
+    StripeEventModel,
+    SubscriptionPlanModel,
+    TelegramUserModel,
+    UserSubscriptionModel,
+)
 from poker_bot.notifications import AdminSystemNotification, UserChatNotification
 
 ACTIVE_SUBSCRIPTION_STATUSES = {"active"}
@@ -18,6 +25,35 @@ PENDING_SUBSCRIPTION_STATUSES = {"pending_activation"}
 PAYMENT_PROBLEM_SUBSCRIPTION_STATUSES = {"past_due", "paused", "unpaid"}
 SUBSCRIPTION_PLAN_CODES = ("monthly", "quarterly", "semiannual", "yearly")
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SubscriptionPlanLimits:
+    code: str
+    licensed_chats_limit: int
+    closed_games_30d_limit: int
+    unique_players_30d_limit: int
+
+
+@dataclass(frozen=True)
+class ChatLimitBoostSnapshot:
+    chat_id: int
+    owner_telegram_user_id: int
+    status: str
+    boost_code: str
+    duration_days: int
+    multiplier: float
+    extra_closed_games_30d_limit: int
+    extra_unique_players_30d_limit: int
+    purchased_at: datetime | None
+    expires_at: datetime | None
+
+
+@dataclass(frozen=True)
+class BillingCatalogItem:
+    code: str
+    alias: str
+    price: str | None
 
 
 @dataclass(frozen=True)
@@ -130,6 +166,175 @@ class StripeBillingService:
     def chat_has_active_subscription(self, chat_id: int) -> bool:
         snapshot = self.get_chat_subscription(chat_id)
         return bool(snapshot and snapshot.is_active)
+
+    def get_plan_limits(self, plan_code: str | None) -> SubscriptionPlanLimits | None:
+        if not plan_code:
+            return None
+        with self.session_factory() as session:
+            plan = session.scalar(
+                select(SubscriptionPlanModel).where(
+                    SubscriptionPlanModel.code == plan_code,
+                    SubscriptionPlanModel.is_active.is_(True),
+                )
+            )
+            if plan is None:
+                return None
+            return SubscriptionPlanLimits(
+                code=plan.code,
+                licensed_chats_limit=plan.licensed_chats_limit,
+                closed_games_30d_limit=plan.closed_games_30d_limit,
+                unique_players_30d_limit=plan.unique_players_30d_limit,
+            )
+
+    def get_effective_plan_limits(self, chat_id: int, plan_code: str | None) -> SubscriptionPlanLimits | None:
+        base_limits = self.get_plan_limits(plan_code)
+        if base_limits is None:
+            return None
+        boost = self.get_active_limit_boost(chat_id)
+        if boost is None:
+            return base_limits
+        return SubscriptionPlanLimits(
+            code=base_limits.code,
+            licensed_chats_limit=base_limits.licensed_chats_limit,
+            closed_games_30d_limit=base_limits.closed_games_30d_limit + boost.extra_closed_games_30d_limit,
+            unique_players_30d_limit=(
+                base_limits.unique_players_30d_limit + boost.extra_unique_players_30d_limit
+            ),
+        )
+
+    def get_active_limit_boost(self, chat_id: int) -> ChatLimitBoostSnapshot | None:
+        now = datetime.now(timezone.utc)
+        with self.session_factory() as session:
+            boost = session.scalar(
+                select(ChatLimitBoostModel)
+                .where(
+                    ChatLimitBoostModel.chat_id == chat_id,
+                    ChatLimitBoostModel.status == "active",
+                    ChatLimitBoostModel.expires_at.is_not(None),
+                    ChatLimitBoostModel.expires_at > now,
+                )
+                .order_by(ChatLimitBoostModel.expires_at.desc())
+            )
+            if boost is None:
+                return None
+            return self._limit_boost_snapshot(boost)
+
+    def available_limit_boost_aliases(self) -> list[BillingCatalogItem]:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(LimitBoostProductModel)
+                .where(
+                    LimitBoostProductModel.is_active.is_(True),
+                    LimitBoostProductModel.stripe_price_id.is_not(None),
+                )
+                .order_by(LimitBoostProductModel.duration_days)
+            ).all()
+            return [
+                BillingCatalogItem(
+                    code=row.code,
+                    alias=row.alias,
+                    price=self._format_amount(row.amount_minor, row.currency),
+                )
+                for row in rows
+            ]
+
+    def sync_catalog_prices_from_stripe(self) -> None:
+        if not self.enabled:
+            return
+        with self.session_factory.begin() as session:
+            for row in session.scalars(
+                select(SubscriptionPlanModel).where(SubscriptionPlanModel.stripe_price_id.is_not(None))
+            ):
+                self._sync_price_fields(row)
+            for row in session.scalars(
+                select(LimitBoostProductModel).where(LimitBoostProductModel.stripe_price_id.is_not(None))
+            ):
+                self._sync_price_fields(row)
+
+    def create_limit_boost_checkout_session(
+        self,
+        telegram_user_id: int,
+        chat_id: int,
+        boost_code: str,
+        username: str | None = None,
+        first_name: str | None = None,
+    ) -> str:
+        if not self.enabled:
+            raise RuntimeError("Stripe is not configured.")
+
+        with self.session_factory.begin() as session:
+            product = self._resolve_limit_boost_product(session, boost_code)
+            subscription = session.scalar(
+                select(UserSubscriptionModel).where(
+                    UserSubscriptionModel.requested_chat_id == chat_id,
+                    UserSubscriptionModel.telegram_user_id == telegram_user_id,
+                    UserSubscriptionModel.status.in_(ACTIVE_SUBSCRIPTION_STATUSES),
+                )
+            )
+            if subscription is None:
+                raise ValueError("active_subscription_required")
+
+            active_boost = session.scalar(
+                select(ChatLimitBoostModel.id).where(
+                    ChatLimitBoostModel.chat_id == chat_id,
+                    ChatLimitBoostModel.status == "active",
+                    ChatLimitBoostModel.expires_at.is_not(None),
+                    ChatLimitBoostModel.expires_at > datetime.now(timezone.utc),
+                )
+            )
+            if active_boost is not None:
+                raise ValueError("active_limit_boost_exists")
+
+            user = self._ensure_user_row(session, telegram_user_id, username, first_name)
+            customer_id = user.stripe_customer_id or subscription.stripe_customer_id
+            if not customer_id:
+                customer = stripe.Customer.create(
+                    metadata={"telegram_user_id": str(telegram_user_id)},
+                    name=first_name or username or str(telegram_user_id),
+                )
+                customer_id = customer["id"]
+                user.stripe_customer_id = customer_id
+                subscription.stripe_customer_id = customer_id
+
+            base_limits = self._plan_limits_from_row(session, subscription.plan_code)
+            if base_limits is None:
+                raise ValueError("subscription_plan_unavailable")
+            extra_closed_games = int(base_limits.closed_games_30d_limit * (float(product.multiplier) - 1))
+            extra_unique_players = int(base_limits.unique_players_30d_limit * (float(product.multiplier) - 1))
+
+            checkout_session = stripe.checkout.Session.create(
+                mode="payment",
+                customer=customer_id,
+                line_items=[{"price": product.stripe_price_id, "quantity": 1}],
+                client_reference_id=str(telegram_user_id),
+                success_url=f"{self.settings.app_base_url}/billing/success?session_id={{CHECKOUT_SESSION_ID}}",
+                cancel_url=f"{self.settings.app_base_url}/billing/cancel",
+                allow_promotion_codes=True,
+                metadata={
+                    "purchase_type": "limit_boost",
+                    "telegram_user_id": str(telegram_user_id),
+                    "chat_id": str(chat_id),
+                    "boost_code": boost_code,
+                },
+            )
+
+            session.add(
+                ChatLimitBoostModel(
+                    chat_id=chat_id,
+                    owner_telegram_user_id=telegram_user_id,
+                    provider="stripe",
+                    provider_status="checkout_session_created",
+                    checkout_session_id=checkout_session["id"],
+                    stripe_price_id=product.stripe_price_id,
+                    boost_code=product.code,
+                    duration_days=product.duration_days,
+                    multiplier=float(product.multiplier),
+                    extra_closed_games_30d_limit=extra_closed_games,
+                    extra_unique_players_30d_limit=extra_unique_players,
+                    status="pending",
+                )
+            )
+            return checkout_session["url"]
 
     def chat_has_subscription_history(self, chat_id: int) -> bool:
         historical_statuses = {"active", "past_due", "paused", "unpaid", "canceled", "expired"}
@@ -411,8 +616,13 @@ class StripeBillingService:
         logger.info("stripe event handler: type=%s", event_type)
 
         if event_type == "checkout.session.completed":
+            metadata = payload.get("metadata", {}) or {}
+            if metadata.get("purchase_type") == "limit_boost":
+                notification = self._activate_limit_boost_from_checkout(session, payload)
+                return ([notification] if notification is not None else []), []
+
             telegram_user_id = self._parse_telegram_user_id(
-                payload.get("client_reference_id") or payload.get("metadata", {}).get("telegram_user_id")
+                payload.get("client_reference_id") or metadata.get("telegram_user_id")
             )
             stripe_subscription_id = payload.get("subscription")
             customer_id = payload.get("customer")
@@ -439,7 +649,7 @@ class StripeBillingService:
             subscription.status = "pending_activation"
             subscription.stripe_customer_id = customer_id
             subscription.checkout_session_id = payload.get("id")
-            subscription.plan_code = payload.get("metadata", {}).get("plan_code")
+            subscription.plan_code = metadata.get("plan_code")
             return [], []
 
         if event_type.startswith("customer.subscription."):
@@ -468,6 +678,16 @@ class StripeBillingService:
             return self._build_subscription_notifications(previous_snapshot, subscription, event_type)
 
         if event_type in {"charge.refunded", "refund.updated"}:
+            payment_intent_id = payload.get("payment_intent")
+            if payment_intent_id:
+                boost = session.scalar(
+                    select(ChatLimitBoostModel).where(ChatLimitBoostModel.payment_intent_id == payment_intent_id)
+                )
+                if boost is not None:
+                    boost.status = "refunded"
+                    boost.provider_status = "refunded"
+                    return [UserChatNotification(chat_id=boost.chat_id, text=tr("limit_boost_event_refunded"))], []
+
             customer_id = payload.get("customer")
             if not customer_id and payload.get("charge"):
                 try:
@@ -575,19 +795,115 @@ class StripeBillingService:
             session.flush()
         return subscription
 
-    def available_plan_codes(self) -> list[str]:
-        with self.session_factory() as session:
-            rows = session.scalars(
-                select(SubscriptionPlanModel)
-                .where(
-                    SubscriptionPlanModel.is_active.is_(True),
-                    SubscriptionPlanModel.stripe_price_id.is_not(None),
-                )
-                .order_by(SubscriptionPlanModel.id)
-            ).all()
-            return [row.code for row in rows]
+    def _resolve_limit_boost_product(self, session: Session, boost_code: str) -> LimitBoostProductModel:
+        product = session.scalar(
+            select(LimitBoostProductModel).where(
+                LimitBoostProductModel.code == boost_code,
+                LimitBoostProductModel.is_active.is_(True),
+                LimitBoostProductModel.stripe_price_id.is_not(None),
+            )
+        )
+        if product is None:
+            raise ValueError(f"Unsupported limit boost: {boost_code}")
+        return product
 
-    def available_plan_aliases(self) -> list[tuple[str, str]]:
+    @staticmethod
+    def _format_amount(amount_minor: int | None, currency: str | None) -> str | None:
+        if amount_minor is None or not currency:
+            return None
+        amount = amount_minor / 100
+        if currency.lower() == "eur":
+            return f"€{amount:.2f}"
+        return f"{amount:.2f} {currency.upper()}"
+
+    @staticmethod
+    def _sync_price_fields(row) -> None:
+        if not row.stripe_price_id:
+            return
+        price = stripe.Price.retrieve(row.stripe_price_id)
+        amount_minor = price.get("unit_amount")
+        currency = price.get("currency")
+        if amount_minor is not None:
+            row.amount_minor = int(amount_minor)
+        if currency:
+            row.currency = currency.lower()
+
+    def _plan_limits_from_row(self, session: Session, plan_code: str | None) -> SubscriptionPlanLimits | None:
+        if not plan_code:
+            return None
+        plan = session.scalar(
+            select(SubscriptionPlanModel).where(
+                SubscriptionPlanModel.code == plan_code,
+                SubscriptionPlanModel.is_active.is_(True),
+            )
+        )
+        if plan is None:
+            return None
+        return SubscriptionPlanLimits(
+            code=plan.code,
+            licensed_chats_limit=plan.licensed_chats_limit,
+            closed_games_30d_limit=plan.closed_games_30d_limit,
+            unique_players_30d_limit=plan.unique_players_30d_limit,
+        )
+
+    def _activate_limit_boost_from_checkout(self, session: Session, payload) -> UserChatNotification | None:
+        checkout_session_id = payload.get("id")
+        metadata = payload.get("metadata", {}) or {}
+        chat_id = self._parse_telegram_user_id(metadata.get("chat_id"))
+        telegram_user_id = self._parse_telegram_user_id(
+            payload.get("client_reference_id") or metadata.get("telegram_user_id")
+        )
+        if not checkout_session_id or chat_id is None or telegram_user_id is None:
+            return None
+
+        boost = session.scalar(
+            select(ChatLimitBoostModel).where(ChatLimitBoostModel.checkout_session_id == checkout_session_id)
+        )
+        if boost is None:
+            boost_code = metadata.get("boost_code")
+            if not boost_code:
+                return None
+            product = self._resolve_limit_boost_product(session, boost_code)
+            subscription = session.scalar(
+                select(UserSubscriptionModel).where(
+                    UserSubscriptionModel.requested_chat_id == chat_id,
+                    UserSubscriptionModel.telegram_user_id == telegram_user_id,
+                )
+            )
+            base_limits = self._plan_limits_from_row(session, subscription.plan_code if subscription else None)
+            if base_limits is None:
+                return None
+            boost = ChatLimitBoostModel(
+                chat_id=chat_id,
+                owner_telegram_user_id=telegram_user_id,
+                provider="stripe",
+                checkout_session_id=checkout_session_id,
+                stripe_price_id=product.stripe_price_id,
+                boost_code=product.code,
+                duration_days=product.duration_days,
+                multiplier=float(product.multiplier),
+                extra_closed_games_30d_limit=int(base_limits.closed_games_30d_limit * (float(product.multiplier) - 1)),
+                extra_unique_players_30d_limit=int(
+                    base_limits.unique_players_30d_limit * (float(product.multiplier) - 1)
+                ),
+            )
+            session.add(boost)
+
+        purchased_at = datetime.now(timezone.utc)
+        boost.provider_status = "checkout_completed"
+        boost.payment_intent_id = payload.get("payment_intent")
+        boost.status = "active"
+        boost.purchased_at = purchased_at
+        boost.expires_at = purchased_at + timedelta(days=boost.duration_days)
+        return UserChatNotification(
+            chat_id=boost.chat_id,
+            text=tr(
+                "limit_boost_event_paid",
+                expires_at=boost.expires_at.strftime("%Y-%m-%d %H:%M UTC"),
+            ),
+        )
+
+    def available_plan_aliases(self) -> list[BillingCatalogItem]:
         with self.session_factory() as session:
             rows = session.scalars(
                 select(SubscriptionPlanModel)
@@ -597,7 +913,14 @@ class StripeBillingService:
                 )
                 .order_by(SubscriptionPlanModel.id)
             ).all()
-            return [(row.code, row.alias) for row in rows]
+            return [
+                BillingCatalogItem(
+                    code=row.code,
+                    alias=row.alias,
+                    price=self._format_amount(row.amount_minor, row.currency),
+                )
+                for row in rows
+            ]
 
     def _resolve_price_id(self, plan_code: str) -> str:
         with self.session_factory() as session:
@@ -708,6 +1031,21 @@ class StripeBillingService:
             cancel_requested_chat_id=subscription.cancel_requested_chat_id,
             refund_requested_at=subscription.refund_requested_at,
             refund_requested_chat_id=subscription.refund_requested_chat_id,
+        )
+
+    @staticmethod
+    def _limit_boost_snapshot(boost: ChatLimitBoostModel) -> ChatLimitBoostSnapshot:
+        return ChatLimitBoostSnapshot(
+            chat_id=boost.chat_id,
+            owner_telegram_user_id=boost.owner_telegram_user_id,
+            status=boost.status,
+            boost_code=boost.boost_code,
+            duration_days=boost.duration_days,
+            multiplier=float(boost.multiplier),
+            extra_closed_games_30d_limit=boost.extra_closed_games_30d_limit,
+            extra_unique_players_30d_limit=boost.extra_unique_players_30d_limit,
+            purchased_at=boost.purchased_at,
+            expires_at=boost.expires_at,
         )
 
     def _build_subscription_notifications(

@@ -29,7 +29,7 @@ from poker_bot.rendering import (
 )
 from poker_bot.runtime import get_services
 from poker_bot.store import GameSession
-from poker_bot.subscription_plans import parse_plan_code
+from poker_bot.subscription_plans import parse_limit_boost_code, parse_plan_code
 
 
 def _chat_id(update: Update) -> int:
@@ -151,6 +151,55 @@ def _join_text(parts: list[str]) -> str:
     return "\n\n".join(part for part in parts if part)
 
 
+def _chat_usage_window_start() -> datetime:
+    return datetime.now(timezone.utc) - timedelta(days=30)
+
+
+def _usage_limit_text(kind: str, used: int, limit: int) -> str:
+    if kind == "games":
+        return tr("chat_usage_closed_games_limit_reached", used=used, limit=limit)
+    return tr("chat_usage_unique_players_limit_reached", used=used, limit=limit)
+
+
+def _usage_warning_text(kind: str, used: int, limit: int) -> str:
+    if kind == "games":
+        return tr("chat_usage_closed_games_warning", used=used, limit=limit)
+    return tr("chat_usage_unique_players_warning", used=used, limit=limit)
+
+
+def _chat_usage_gate(update: Update) -> tuple[bool, str | None, str | None]:
+    services = get_services()
+    user_id = _telegram_user_id(update)
+    chat_id = _chat_id(update)
+    if services.entitlements.is_billing_exempt(user_id, chat_id):
+        return True, None, None
+
+    subscription = services.billing.get_chat_subscription(chat_id)
+    if subscription is None or not subscription.is_active:
+        return True, None, None
+
+    limits = services.billing.get_effective_plan_limits(chat_id, subscription.plan_code)
+    if limits is None:
+        return True, None, None
+
+    since = _chat_usage_window_start()
+    closed_games = services.store.count_closed_games_for_chat_since(chat_id, since)
+    unique_players = services.store.count_unique_players_for_chat_since(chat_id, since)
+
+    if closed_games >= limits.closed_games_30d_limit:
+        return False, _usage_limit_text("games", closed_games, limits.closed_games_30d_limit), None
+    if unique_players >= limits.unique_players_30d_limit:
+        return False, _usage_limit_text("players", unique_players, limits.unique_players_30d_limit), None
+
+    threshold = services.settings.chat_usage_warning_threshold
+    warnings: list[str] = []
+    if closed_games + 1 >= limits.closed_games_30d_limit * threshold:
+        warnings.append(_usage_warning_text("games", closed_games + 1, limits.closed_games_30d_limit))
+    if unique_players >= limits.unique_players_30d_limit * threshold:
+        warnings.append(_usage_warning_text("players", unique_players, limits.unique_players_30d_limit))
+    return True, None, "\n\n".join(warnings)
+
+
 def _can_start_new_game(update: Update) -> tuple[bool, str | None]:
     services = get_services()
     chat_id = _chat_id(update)
@@ -166,6 +215,9 @@ def _can_start_new_game(update: Update) -> tuple[bool, str | None]:
         return True, None
 
     if services.billing.chat_has_active_subscription(chat_id):
+        allowed, reason, _warning = _chat_usage_gate(update)
+        if not allowed:
+            return False, reason
         return True, None
 
     if services.billing.chat_has_subscription_history(chat_id):
@@ -221,8 +273,30 @@ def _parse_plan_code(args: list[str]) -> str | None:
 def _plan_catalog_text() -> str:
     services = get_services()
     lines = [tr("subscription_plan_choose")]
-    for plan_code, alias in services.billing.available_plan_aliases():
-        lines.append(tr("subscription_plan_item", code=alias, label=tr(f"plan_{plan_code}")))
+    for item in services.billing.available_plan_aliases():
+        lines.append(
+            tr(
+                "subscription_plan_item_priced",
+                code=item.alias,
+                label=tr(f"plan_{item.code}"),
+                price=item.price or tr("price_unknown"),
+            )
+        )
+    return "\n".join(lines)
+
+
+def _limit_boost_catalog_text() -> str:
+    services = get_services()
+    lines = [tr("limit_boost_choose")]
+    for item in services.billing.available_limit_boost_aliases():
+        lines.append(
+            tr(
+                "limit_boost_item",
+                code=item.alias,
+                label=tr(f"limit_boost_{item.code}"),
+                price=item.price or tr("price_unknown"),
+            )
+        )
     return "\n".join(lines)
 
 
@@ -267,11 +341,8 @@ def _help_text() -> str:
         "Подписка покупается из той группы, где должен работать бот, и действует только в этой группе.",
         "Играть в оплаченной группе могут все участники. Управлять подпиской может только пользователь, который ее оформил.",
         "",
-        "<b>Игра</b>",
-        "/newgame - новая игра",
-        "/newgame i - интерактивный сбор входов и выходов",
-        "/finish - перейти от входов к выходам в интерактивной игре",
-        "/restart - пересобрать интерактивную игру из сообщений",
+        "<b>Обычный режим</b>",
+        "/newgame - новая пустая игра",
         "/startgame &lt;название&gt; - новая игра из сохраненной компании",
     ]
     if _premium_feature_enabled("revanche"):
@@ -296,8 +367,17 @@ def _help_text() -> str:
         lines.append("/history [N] - история последних игр")
     if _premium_feature_enabled("export_csv"):
         lines.append("/export_csv - выгрузить последнюю закрытую игру в CSV")
+    lines.append("/limits - текущие лимиты и использование за 30 дней")
+
     lines.extend(
         [
+            "",
+            "<b>Интерактивный режим</b>",
+            "/newgame i - начать сбор входов и выходов сообщениями",
+            "/finish - завершить этап входов и перейти к выходам",
+            "/restart - пересобрать интерактивную игру из сообщений",
+            "/list - проверить текущую таблицу",
+            "/calc [direct|hub] [@hub] - закрыть игру и посчитать переводы",
             "",
             "<b>Подписка</b>",
             "/sub - планы подписки",
@@ -306,6 +386,8 @@ def _help_text() -> str:
             "/sub_cancel - отменить подписку, только владелец",
         ]
     )
+    lines.append("/boost - limit boost x2")
+    lines.append("/boost 1m, /boost 3m, /boost 6m, /boost 1y - buy limit boost for this chat")
     if _premium_feature_enabled("sub_refund"):
         lines.append("/sub_refund - запросить рефанд, только владелец")
     lines.extend(
@@ -317,72 +399,6 @@ def _help_text() -> str:
             "<code>/add @ivan 10+20+20</code>",
             "<code>/add @ivan 10+20+20, 50</code>",
             "В /addblock можно писать по одному игроку на строку.",
-        ]
-    )
-    return "\n".join(lines)
-
-    lines = [
-        "<b>Бот расчета взаиморасчетов для покера</b>",
-        "",
-        "<b>Основные команды</b>",
-        "/start - краткая справка",
-        "/help - полная справка",
-        "/newgame - пустая новая игра",
-        "/newgame i - интерактивный сбор входов и выходов",
-        "/finish - завершить сбор входов в интерактивной игре",
-        "/restart - пересобрать интерактивную игру из сохраненных сообщений",
-        "/startgame &lt;название группы&gt; - новая игра из сохраненной компании",
-    ]
-    if _premium_feature_enabled("revanche"):
-        lines.append("/revanche - новая игра с составом прошлой закрытой игры")
-    if _premium_feature_enabled("savegroup"):
-        lines.append("/savegroup &lt;название&gt; - сохранить текущий состав игроков")
-    if _premium_feature_enabled("groups"):
-        lines.append("/groups - список сохраненных компаний")
-
-    lines.extend(
-        [
-            "/add &lt;строка&gt; - добавить или обновить игрока",
-            "/addblock - добавить игроков блоком",
-            "/remove @user - удалить игрока",
-            "/removeAll - удалить всех игроков из открытой игры",
-            "/list - показать текущую таблицу",
-        ]
-    )
-    if _premium_feature_enabled("analyze"):
-        lines.append("/analyze - показать таблицу и Premium-анализ расхождения")
-
-    lines.append("/calc [direct|hub] [@hub] - завершить игру, посчитать переводы и показать статистику")
-    if _premium_feature_enabled("history"):
-        lines.append("/history [N] - история последних игр")
-    if _premium_feature_enabled("export_csv"):
-        lines.append("/export_csv - выгрузить последнюю закрытую игру в CSV")
-
-    lines.extend(
-        [
-            "",
-            "<b>Подписка</b>",
-            "/sub - показать доступные планы подписки",
-            "/sub 1m - месячная подписка",
-            "/sub 3m - подписка на 3 месяца",
-            "/sub 6m - подписка на полгода",
-            "/sub 1y - подписка на год",
-            "/sub_status - статус вашей подписки",
-            "/sub_cancel - отменить подписку",
-        ]
-    )
-    if _premium_feature_enabled("sub_refund"):
-        lines.append("/sub_refund - запросить рефанд")
-
-    lines.extend(
-        [
-            "",
-            "<b>Поддерживаемый ввод</b>",
-            "<code>/add @ivan 100</code>",
-            "<code>/add @ivan 100, 20</code>",
-            "<code>/add @ivan 10+20+20</code>",
-            "<code>/add @ivan 10+20+20, 50</code>",
-            "В блоке можно писать по одному игроку на строку.",
         ]
     )
     return "\n".join(lines)
@@ -469,6 +485,74 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     await message.reply_text(
         tr("subscription_checkout_created", plan=tr(f"plan_{plan_code}"), url=checkout_url)
+    )
+
+
+async def limit_boost(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    services = get_services()
+    user = update.effective_user
+    message = _message(update)
+    chat_id = _chat_id(update)
+    if user is None:
+        await message.reply_text(tr("limit_boost_checkout_unavailable"))
+        return
+
+    if await _reply_private_info_for_non_admin(update):
+        return
+    if not _is_group_chat(update) and not services.entitlements.is_super_admin(user.id):
+        await message.reply_text(tr("group_chat_required"))
+        return
+
+    if not services.billing.enabled:
+        await message.reply_text(tr("limit_boost_checkout_unavailable"))
+        return
+
+    chat_subscription = services.billing.get_chat_subscription(chat_id)
+    if chat_subscription is None or not chat_subscription.is_active:
+        await message.reply_text(tr("limit_boost_active_subscription_required"))
+        return
+    if chat_subscription.telegram_user_id != user.id:
+        await message.reply_text(tr("subscription_owner_only"))
+        return
+
+    active_boost = services.billing.get_active_limit_boost(chat_id)
+    if active_boost is not None and active_boost.expires_at is not None:
+        await message.reply_text(
+            tr("limit_boost_already_active", expires_at=active_boost.expires_at.strftime("%Y-%m-%d %H:%M UTC"))
+        )
+        return
+
+    boost_code = parse_limit_boost_code(context.args)
+    if boost_code is None:
+        await message.reply_text(_limit_boost_catalog_text())
+        return
+
+    try:
+        checkout_url = services.billing.create_limit_boost_checkout_session(
+            telegram_user_id=user.id,
+            chat_id=chat_id,
+            boost_code=boost_code,
+            username=user.username,
+            first_name=user.first_name,
+        )
+    except ValueError as exc:
+        reason = str(exc)
+        if reason == "active_limit_boost_exists":
+            await message.reply_text(tr("limit_boost_already_active_unknown"))
+        elif reason == "active_subscription_required":
+            await message.reply_text(tr("limit_boost_active_subscription_required"))
+        else:
+            await message.reply_text(tr("limit_boost_plan_unavailable"))
+        return
+
+    services.store.record_product_event(
+        "limit_boost_checkout_started",
+        telegram_user_id=user.id,
+        chat_id=chat_id,
+        properties={"boost_code": boost_code},
+    )
+    await message.reply_text(
+        tr("limit_boost_checkout_created", boost=tr(f"limit_boost_{boost_code}"), url=checkout_url)
     )
 
 
@@ -622,8 +706,15 @@ async def newgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         properties={"source": "interactive" if interactive else "empty"},
     )
     subscription = _get_subscription_for_update(update)
+    _allowed, _reason, usage_warning = _chat_usage_gate(update)
     await _message(update).reply_text(
-        _join_text([tr("newgame_interactive_done") if interactive else tr("newgame_done"), _limits_text(update, subscription, user_id)]),
+        _join_text(
+            [
+                tr("newgame_interactive_done") if interactive else tr("newgame_done"),
+                usage_warning or "",
+                _limits_text(update, subscription, user_id),
+            ]
+        ),
     )
 
 
@@ -738,10 +829,12 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             properties={"group_name": group_name, "player_count": len(group.player_names)},
         )
         subscription = _get_subscription_for_update(update)
+        _allowed, _reason, usage_warning = _chat_usage_gate(update)
         await message.reply_text(
-            "\n\n".join(
+            _join_text(
                 [
                     tr("startgame_done", name=group_name, players=", ".join(group.player_names)),
+                    usage_warning or "",
                     _limits_text(update, subscription, user_id),
                 ]
             )
@@ -784,8 +877,15 @@ async def revanche(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         properties={"player_count": len(player_names), "source_game_id": latest_closed.id},
     )
     subscription = _get_subscription_for_update(update)
+    _allowed, _reason, usage_warning = _chat_usage_gate(update)
     await message.reply_text(
-        "\n\n".join([tr("revanche_done", players=", ".join(player_names)), _limits_text(update, subscription, user_id)])
+        _join_text(
+            [
+                tr("revanche_done", players=", ".join(player_names)),
+                usage_warning or "",
+                _limits_text(update, subscription, user_id),
+            ]
+        )
     )
 
 
@@ -970,6 +1070,64 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await _message(update).reply_text(render_history(entries))
 
 
+async def limits_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
+    _sync_user(update)
+    services = get_services()
+    chat_id = _chat_id(update)
+    user_id = _telegram_user_id(update)
+    message = _message(update)
+
+    if services.entitlements.is_billing_exempt(user_id, chat_id):
+        await message.reply_text(tr("limits_status_admin"))
+        return
+
+    subscription = services.billing.get_chat_subscription(chat_id)
+    if subscription is None or not subscription.is_active:
+        await message.reply_text(
+            _join_text(
+                [
+                    tr("limits_no_active_subscription"),
+                    tr("limits_status_free_only", free_games_left=_remaining_free_games(chat_id)),
+                ]
+            )
+        )
+        return
+
+    limits = services.billing.get_effective_plan_limits(chat_id, subscription.plan_code)
+    if limits is None:
+        await message.reply_text(tr("limits_plan_unavailable"))
+        return
+
+    since = _chat_usage_window_start()
+    closed_games = services.store.count_closed_games_for_chat_since(chat_id, since)
+    unique_players = services.store.count_unique_players_for_chat_since(chat_id, since)
+    active_boost = services.billing.get_active_limit_boost(chat_id)
+    await message.reply_text(
+        _join_text(
+            [
+                tr(
+                    "limits_status_chat_usage",
+                    plan=tr(f"plan_{subscription.plan_code or 'monthly'}"),
+                    closed_games=closed_games,
+                    closed_games_limit=limits.closed_games_30d_limit,
+                    unique_players=unique_players,
+                    unique_players_limit=limits.unique_players_30d_limit,
+                    warning_threshold=int(services.settings.chat_usage_warning_threshold * 100),
+                ),
+                tr(
+                    "limits_status_active_boost",
+                    expires_at=active_boost.expires_at.strftime("%Y-%m-%d %H:%M UTC"),
+                )
+                if active_boost and active_boost.expires_at
+                else tr("limits_status_no_boost"),
+            ]
+        ),
+        parse_mode=ParseMode.HTML,
+    )
+
+
 async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reply_private_info_for_non_admin(update):
         return
@@ -1117,6 +1275,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_cmd))
     application.add_handler(CommandHandler("sub", subscribe))
+    application.add_handler(CommandHandler("boost", limit_boost))
     application.add_handler(CommandHandler("sub_status", subscription_status))
     application.add_handler(CommandHandler("sub_cancel", cancel_subscription))
     if _premium_feature_enabled("sub_refund"):
@@ -1142,6 +1301,7 @@ def register_handlers(application: Application) -> None:
         application.add_handler(CommandHandler("history", history_cmd))
     if _premium_feature_enabled("export_csv"):
         application.add_handler(CommandHandler("export_csv", export_csv_cmd))
+    application.add_handler(CommandHandler("limits", limits_cmd))
     application.add_handler(CommandHandler("calc", calc))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_message))
     application.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.TEXT & ~filters.COMMAND, interactive_message))

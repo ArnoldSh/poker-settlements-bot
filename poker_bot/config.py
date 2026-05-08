@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import timedelta
 
-from poker_bot.features import DEFAULT_ENABLED_PREMIUM_FEATURES, parse_feature_list
+from poker_bot.features import DEFAULT_ENABLED_FEATURES, parse_feature_list
 
 
 @dataclass(frozen=True)
@@ -21,7 +21,8 @@ class Settings:
     free_trial_days: int
     admin_user_id: int | None
     permission_table_cache_ttl: timedelta
-    enabled_premium_features: frozenset[str]
+    chat_usage_warning_threshold: float
+    enabled_features: frozenset[str]
     stripe_secret_key: str | None
     stripe_webhook_secret: str | None
     app_base_url: str | None
@@ -47,7 +48,16 @@ def _normalise_base_url(url: str | None) -> str | None:
     return url
 
 
-_DURATION_PATTERN = re.compile(r"^(?P<amount>\d+)(?P<unit>[smhd])?$", re.IGNORECASE)
+_ISO_DURATION_PATTERN = re.compile(
+    r"^P"
+    r"(?:(?P<days>\d+)D)?"
+    r"(?:(?P<time>T)"
+    r"(?:(?P<hours>\d+)H)?"
+    r"(?:(?P<minutes>\d+)M)?"
+    r"(?:(?P<seconds>\d+)S)?"
+    r")?$",
+    re.IGNORECASE,
+)
 
 
 def _parse_duration(value: str | None, default: timedelta) -> timedelta:
@@ -55,27 +65,27 @@ def _parse_duration(value: str | None, default: timedelta) -> timedelta:
         return default
 
     raw_value = value.strip()
-    match = _DURATION_PATTERN.match(raw_value)
-    if match:
-        amount = int(match.group("amount"))
-        unit = (match.group("unit") or "s").lower()
-        if unit == "s":
-            return timedelta(seconds=amount)
-        if unit == "m":
-            return timedelta(minutes=amount)
-        if unit == "h":
-            return timedelta(hours=amount)
-        if unit == "d":
-            return timedelta(days=amount)
-
-    parts = raw_value.split(":")
-    if len(parts) == 3 and all(part.isdigit() for part in parts):
-        hours, minutes, seconds = (int(part) for part in parts)
-        return timedelta(hours=hours, minutes=minutes, seconds=seconds)
+    match = _ISO_DURATION_PATTERN.match(raw_value)
+    if match and any(match.group(name) for name in ("days", "hours", "minutes", "seconds")):
+        return timedelta(
+            days=int(match.group("days") or 0),
+            hours=int(match.group("hours") or 0),
+            minutes=int(match.group("minutes") or 0),
+            seconds=int(match.group("seconds") or 0),
+        )
 
     raise RuntimeError(
-        "PERMISSION_TABLE_CACHE_TTL must be a duration like 60, 60s, 5m, 1h, 1d, or HH:MM:SS."
+        "PERMISSION_TABLE_CACHE_TTL must be an ISO 8601 duration like PT5M, PT1H, or P1D."
     )
+
+
+def _parse_ratio(value: str | None, default: float) -> float:
+    if value is None or not value.strip():
+        return default
+    ratio = float(value.strip())
+    if ratio <= 0 or ratio > 1:
+        raise RuntimeError("CHAT_USAGE_WARNING_THRESHOLD must be greater than 0 and less than or equal to 1.")
+    return ratio
 
 
 def load_settings() -> Settings:
@@ -104,10 +114,15 @@ def load_settings() -> Settings:
         ),
         permission_table_cache_ttl=_parse_duration(
             os.environ.get("PERMISSION_TABLE_CACHE_TTL"),
-            default=timedelta(seconds=60),
+            default=timedelta(hours=1),
         ),
-        enabled_premium_features=parse_feature_list(
-            os.environ.get("ENABLED_PREMIUM_FEATURES", DEFAULT_ENABLED_PREMIUM_FEATURES)
+        chat_usage_warning_threshold=_parse_ratio(
+            os.environ.get("CHAT_USAGE_WARNING_THRESHOLD"),
+            default=0.8,
+        ),
+        enabled_features=parse_feature_list(
+            os.environ.get("ENABLED_FEATURES")
+            or DEFAULT_ENABLED_FEATURES
         ),
         stripe_secret_key=os.environ.get("STRIPE_SECRET_KEY"),
         stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET"),

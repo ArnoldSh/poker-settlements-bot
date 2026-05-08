@@ -327,17 +327,6 @@ class DatabaseStore:
             session.refresh(game_row)
             return self._to_session(game_row)
 
-    def count_started_games_for_chat(self, chat_id: int) -> int:
-        with self.session_factory() as session:
-            return int(
-                session.scalar(
-                    select(func.count(ChatGameModel.id)).where(
-                        ChatGameModel.chat_id == chat_id,
-                    )
-                )
-                or 0
-            )
-
     def count_trial_games_for_chat(self, chat_id: int, trial_period_end: datetime) -> int:
         with self.session_factory() as session:
             first_game_at = session.scalar(
@@ -362,22 +351,31 @@ class DatabaseStore:
                 select(func.min(ChatGameModel.created_at)).where(ChatGameModel.chat_id == chat_id)
             )
 
-    def count_started_games_for_user_in_period(
-        self,
-        telegram_user_id: int,
-        period_start: datetime | None,
-        period_end: datetime | None,
-    ) -> int:
-        if period_start is None or period_end is None:
-            return 0
-
+    def count_closed_games_for_chat_since(self, chat_id: int, since: datetime) -> int:
         with self.session_factory() as session:
+            closed_at = func.coalesce(ChatGameModel.finalized_at, ChatGameModel.updated_at, ChatGameModel.created_at)
             return int(
                 session.scalar(
                     select(func.count(ChatGameModel.id)).where(
-                        ChatGameModel.created_by_telegram_user_id == telegram_user_id,
-                        ChatGameModel.created_at >= period_start,
-                        ChatGameModel.created_at <= period_end,
+                        ChatGameModel.chat_id == chat_id,
+                        ChatGameModel.status == "closed",
+                        closed_at >= since,
+                    )
+                )
+                or 0
+            )
+
+    def count_unique_players_for_chat_since(self, chat_id: int, since: datetime) -> int:
+        with self.session_factory() as session:
+            closed_at = func.coalesce(ChatGameModel.finalized_at, ChatGameModel.updated_at, ChatGameModel.created_at)
+            return int(
+                session.scalar(
+                    select(func.count(func.distinct(GamePlayerModel.player_name)))
+                    .join(ChatGameModel, GamePlayerModel.game_id == ChatGameModel.id)
+                    .where(
+                        ChatGameModel.chat_id == chat_id,
+                        ChatGameModel.status == "closed",
+                        closed_at >= since,
                     )
                 )
                 or 0

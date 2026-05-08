@@ -52,10 +52,52 @@ class SubscriptionPlanModel(Base):
     title: Mapped[str] = mapped_column(String(255))
     billing_period: Mapped[str] = mapped_column(String(32), index=True)
     stripe_price_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    amount_minor: Mapped[int | None] = mapped_column(nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean(), default=True, index=True)
     licensed_chats_limit: Mapped[int] = mapped_column(default=1)
     closed_games_30d_limit: Mapped[int] = mapped_column(default=50)
     unique_players_30d_limit: Mapped[int] = mapped_column(default=30)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class LimitBoostProductModel(Base):
+    __tablename__ = "limit_boost_products"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    alias: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    duration_days: Mapped[int] = mapped_column()
+    multiplier: Mapped[float] = mapped_column(Numeric(5, 2), default=2)
+    stripe_price_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    amount_minor: Mapped[int | None] = mapped_column(nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean(), default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class ChatLimitBoostModel(Base):
+    __tablename__ = "chat_limit_boosts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    chat_id: Mapped[int] = mapped_column(sa.BigInteger(), index=True)
+    owner_telegram_user_id: Mapped[int] = mapped_column(sa.BigInteger(), index=True)
+    provider: Mapped[str] = mapped_column(String(32), default="stripe")
+    provider_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    checkout_session_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    payment_intent_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    stripe_price_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    boost_code: Mapped[str] = mapped_column(String(64), index=True)
+    duration_days: Mapped[int] = mapped_column()
+    multiplier: Mapped[float] = mapped_column(Numeric(5, 2), default=2)
+    extra_closed_games_30d_limit: Mapped[int] = mapped_column()
+    extra_unique_players_30d_limit: Mapped[int] = mapped_column()
+    status: Mapped[str] = mapped_column(String(64), default="pending", index=True)
+    purchased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 

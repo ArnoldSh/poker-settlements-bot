@@ -31,29 +31,30 @@ class SettingsTests(unittest.TestCase):
             settings = load_settings()
 
         self.assertIsNone(settings.admin_user_id)
-        self.assertEqual(settings.permission_table_cache_ttl, timedelta(seconds=60))
+        self.assertEqual(settings.permission_table_cache_ttl, timedelta(hours=1))
+        self.assertEqual(settings.chat_usage_warning_threshold, 0.8)
         self.assertEqual(
-            settings.enabled_premium_features,
+            settings.enabled_features,
             frozenset({"revanche", "savegroup", "groups", "analyze", "history", "export_csv", "sub_refund"}),
         )
 
-    def test_loads_enabled_premium_features(self) -> None:
+    def test_loads_enabled_features(self) -> None:
         env = {
             "BOT_TOKEN": "token",
             "DATABASE_URL": "sqlite://",
-            "ENABLED_PREMIUM_FEATURES": "revanche, analyze, sub_refund",
+            "ENABLED_FEATURES": "revanche, analyze, sub_refund",
         }
 
         with patch.dict(os.environ, env, clear=True):
             settings = load_settings()
 
-        self.assertEqual(settings.enabled_premium_features, frozenset({"revanche", "analyze", "sub_refund"}))
+        self.assertEqual(settings.enabled_features, frozenset({"revanche", "analyze", "sub_refund"}))
 
     def test_loads_permission_table_cache_ttl(self) -> None:
         env = {
             "BOT_TOKEN": "token",
             "DATABASE_URL": "sqlite://",
-            "PERMISSION_TABLE_CACHE_TTL": "5m",
+            "PERMISSION_TABLE_CACHE_TTL": "PT5M",
         }
 
         with patch.dict(os.environ, env, clear=True):
@@ -65,13 +66,25 @@ class SettingsTests(unittest.TestCase):
         env = {
             "BOT_TOKEN": "token",
             "DATABASE_URL": "sqlite://",
-            "PERMISSION_TABLE_CACHE_TTL": "01:02:03",
+            "PERMISSION_TABLE_CACHE_TTL": "P1DT2H3M4S",
         }
 
         with patch.dict(os.environ, env, clear=True):
             settings = load_settings()
 
-        self.assertEqual(settings.permission_table_cache_ttl, timedelta(hours=1, minutes=2, seconds=3))
+        self.assertEqual(settings.permission_table_cache_ttl, timedelta(days=1, hours=2, minutes=3, seconds=4))
+
+    def test_loads_chat_usage_warning_threshold(self) -> None:
+        env = {
+            "BOT_TOKEN": "token",
+            "DATABASE_URL": "sqlite://",
+            "CHAT_USAGE_WARNING_THRESHOLD": "0.75",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            settings = load_settings()
+
+        self.assertEqual(settings.chat_usage_warning_threshold, 0.75)
 
 
 if __name__ == "__main__":

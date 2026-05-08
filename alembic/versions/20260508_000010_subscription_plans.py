@@ -17,10 +17,10 @@ depends_on = None
 
 
 PLAN_ROWS = (
-    ("monthly", "1m", "Monthly", "monthly", "price_1TOk3X1FJ9pFBGpFYWPsPZ6c"),
-    ("quarterly", "3m", "Quarterly", "quarterly", "price_1TOk3X1FJ9pFBGpFVgoSBHHX"),
-    ("semiannual", "6m", "Semiannual", "semiannual", "price_1TOk3X1FJ9pFBGpFyQ1cUngT"),
-    ("yearly", "1y", "Yearly", "yearly", "price_1TOk3V1FJ9pFBGpF8gmFnKbA"),
+    ("monthly", "1m", "Monthly", "monthly", "price_1TOk3X1FJ9pFBGpFYWPsPZ6c", 499, "eur"),
+    ("quarterly", "3m", "Quarterly", "quarterly", "price_1TUvW91FJ9pFBGpFQZfLLvFp", 999, "eur"),
+    ("semiannual", "6m", "Semiannual", "semiannual", "price_1TUvXk1FJ9pFBGpFjOBV1NmK", 1999, "eur"),
+    ("yearly", "1y", "Yearly", "yearly", "price_1TUvY81FJ9pFBGpFj9fmc6sN", 2999, "eur"),
 )
 
 
@@ -33,6 +33,8 @@ def upgrade() -> None:
         sa.Column("title", sa.String(length=255), nullable=False),
         sa.Column("billing_period", sa.String(length=32), nullable=False),
         sa.Column("stripe_price_id", sa.String(length=255), nullable=True),
+        sa.Column("amount_minor", sa.Integer(), nullable=True),
+        sa.Column("currency", sa.String(length=3), nullable=True),
         sa.Column("is_active", sa.Boolean(), nullable=False),
         sa.Column("licensed_chats_limit", sa.Integer(), nullable=False),
         sa.Column("closed_games_30d_limit", sa.Integer(), nullable=False),
@@ -53,6 +55,8 @@ def upgrade() -> None:
         sa.column("title", sa.String()),
         sa.column("billing_period", sa.String()),
         sa.column("stripe_price_id", sa.String()),
+        sa.column("amount_minor", sa.Integer()),
+        sa.column("currency", sa.String()),
         sa.column("is_active", sa.Boolean()),
         sa.column("licensed_chats_limit", sa.Integer()),
         sa.column("closed_games_30d_limit", sa.Integer()),
@@ -67,12 +71,14 @@ def upgrade() -> None:
                 "title": title,
                 "billing_period": billing_period,
                 "stripe_price_id": stripe_price_id,
+                "amount_minor": amount_minor,
+                "currency": currency,
                 "is_active": True,
                 "licensed_chats_limit": 1,
                 "closed_games_30d_limit": 50,
                 "unique_players_30d_limit": 30,
             }
-            for code, alias, title, billing_period, stripe_price_id in PLAN_ROWS
+            for code, alias, title, billing_period, stripe_price_id, amount_minor, currency in PLAN_ROWS
         ],
     )
 

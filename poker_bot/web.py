@@ -30,16 +30,23 @@ telegram_app = ApplicationBuilder().token(settings.bot_token).build()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    billing_service = StripeBillingService(settings, session_factory)
+    if billing_service.enabled:
+        try:
+            billing_service.sync_catalog_prices_from_stripe()
+        except Exception:
+            logger.exception("failed to sync Stripe catalog prices")
+
     configure_services(
         AppServices(
             settings=settings,
             store=DatabaseStore(session_factory),
-            billing=StripeBillingService(settings, session_factory),
+            billing=billing_service,
             entitlements=EntitlementPolicy(
                 admin_user_id=settings.admin_user_id,
                 permission_cache=PermissionTableCache(session_factory, settings.permission_table_cache_ttl),
             ),
-            features=FeatureFlags(settings.enabled_premium_features),
+            features=FeatureFlags(settings.enabled_features),
             admin_notifier=TelegramAdminNotifier(settings.admin_user_id),
             user_notifier=TelegramUserNotifier(),
         )
@@ -163,7 +170,7 @@ async def stripe_webhook(
             properties={"event_type": result.event_type, "status": result.status},
         )
         if result.event_type == "checkout.session.completed":
-            services.store.record_product_event("subscription_checkout_completed")
+            services.store.record_product_event("checkout_session_completed")
         if result.event_type.startswith("customer.subscription."):
             services.store.record_product_event(
                 "subscription_provider_state_changed",
