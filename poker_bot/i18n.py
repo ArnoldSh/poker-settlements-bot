@@ -298,6 +298,10 @@ RU_CATALOG = Catalog(
         ),
         "subscription_event_refunded": "Рефанд выполнен успешно.",
         "billing_return_to_telegram_page": "Можно вернуться в Telegram. Дальнейшие уведомления придут в чат.",
+        "limit_boost_choose": "Выберите пакет увеличения лимитов командой:",
+        "limit_boost_item": "/boost {code} - boost x2 на {period} за {price}",
+        "subscription_plan_choose": "Выберите план подписки командой:",
+        "subscription_plan_item_priced": "/sub {code} - подписка на {period} за {price}",
     },
     commentary=CommentaryCatalog(
         winner_big=(
