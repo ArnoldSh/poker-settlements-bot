@@ -386,8 +386,11 @@ def _help_text() -> str:
             "/sub_cancel - отменить подписку, только владелец",
         ]
     )
-    lines.append("/boost - limit boost x2")
-    lines.append("/boost 1m, /boost 3m, /boost 6m, /boost 1y - buy limit boost for this chat")
+    lines.append("/boost - пакеты увеличения лимитов x2")
+    lines.append("/boost 1m - купить boost на 1 месяц для этого чата")
+    lines.append("/boost 3m - купить boost на 3 месяца для этого чата")
+    lines.append("/boost 6m - купить boost на 6 месяцев для этого чата")
+    lines.append("/boost 1y - купить boost на 1 год для этого чата")
     if _premium_feature_enabled("sub_refund"):
         lines.append("/sub_refund - запросить рефанд, только владелец")
     lines.extend(

@@ -30,6 +30,8 @@ telegram_app = ApplicationBuilder().token(settings.bot_token).build()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("enabled features: %s", sorted(settings.enabled_features))
+
     billing_service = StripeBillingService(settings, session_factory)
     if billing_service.enabled:
         try:

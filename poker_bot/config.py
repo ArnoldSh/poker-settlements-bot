@@ -97,6 +97,8 @@ def load_settings() -> Settings:
     if not database_url:
         raise RuntimeError("DATABASE_URL is required.")
 
+    enabled_features_env = os.environ.get("ENABLED_FEATURES")
+
     return Settings(
         bot_token=bot_token,
         database_url=database_url,
@@ -121,8 +123,9 @@ def load_settings() -> Settings:
             default=0.8,
         ),
         enabled_features=parse_feature_list(
-            os.environ.get("ENABLED_FEATURES")
-            or DEFAULT_ENABLED_FEATURES
+            DEFAULT_ENABLED_FEATURES
+            if enabled_features_env is None
+            else enabled_features_env
         ),
         stripe_secret_key=os.environ.get("STRIPE_SECRET_KEY"),
         stripe_webhook_secret=os.environ.get("STRIPE_WEBHOOK_SECRET"),

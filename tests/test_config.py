@@ -50,6 +50,18 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.enabled_features, frozenset({"revanche", "analyze", "sub_refund"}))
 
+    def test_empty_enabled_features_disables_all_guarded_features(self) -> None:
+        env = {
+            "BOT_TOKEN": "token",
+            "DATABASE_URL": "sqlite://",
+            "ENABLED_FEATURES": "",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            settings = load_settings()
+
+        self.assertEqual(settings.enabled_features, frozenset())
+
     def test_loads_permission_table_cache_ttl(self) -> None:
         env = {
             "BOT_TOKEN": "token",
