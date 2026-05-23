@@ -236,6 +236,19 @@ RU_CATALOG = Catalog(
         "addall_added": "Добавлены: {players}",
         "addall_added_empty": "Добавлены: -",
         "addall_errors": "Ошибки:\n{errors}",
+        "system_command_forbidden": "Эта системная команда доступна только супер-админу.",
+        "importhistory_chat_id_required": "Для импорта из личного чата укажите chat_id: /importhistory -1001234567890",
+        "importhistory_usage": (
+            "Отправьте команду так:\n"
+            "<code>/importhistory --alias @rudakovable=@kllrrr --date-fix \"233.05.2026 11:10=23.05.2026 11:10\" --dry-run</code>\n"
+            "<code>[23.05.2026 11:10]\n"
+            "Игрок | Вход | Выход | Итог\n"
+            "@BugMiner | 100,00 € | 133,50 € | 33,50 €</code>\n\n"
+            "Поддерживаются аргументы: --chat-id, --alias, --date-fix, --dry-run.\n"
+            "В группе chat_id можно не указывать. В личке используйте /importhistory --chat-id -100... и затем тело импорта."
+        ),
+        "importhistory_dry_run": "DRY RUN для чата {chat_id}\n{summary}",
+        "importhistory_done": "Импорт завершен для чата {chat_id}\nИмпортировано: {imported}\nПропущено: {skipped}\n{summary}",
         "addblock_usage": (
             "Отправьте команду так:\n"
             "<code>/addAll\n"

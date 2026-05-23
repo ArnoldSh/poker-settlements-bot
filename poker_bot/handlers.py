@@ -11,6 +11,13 @@ from poker_bot.commentary import build_highlights
 from poker_bot.domain import Game, settle_direct, settle_hub
 from poker_bot.exporting import build_game_csv
 from poker_bot.formatting import eur
+from poker_bot.history_import import (
+    build_dry_run_report,
+    import_games,
+    parse_history_dump,
+    parse_import_command_request,
+    summarize_games,
+)
 from poker_bot.i18n import tr
 from poker_bot.billing import PAYMENT_PROBLEM_SUBSCRIPTION_STATUSES
 from poker_bot.notifications import AdminRequestNotification
@@ -119,6 +126,14 @@ def _apply_player_line(session: GameSession, name: str, buyin, out) -> None:
     if name not in session.game.players and len(session.game.players) >= limit:
         raise ValueError(tr("player_limit_reached", limit=limit))
     session.game.add_or_update(name, buyin, out)
+
+
+def _import_target_chat_id(update: Update, requested_chat_id: int | None) -> int:
+    if requested_chat_id is not None:
+        return requested_chat_id
+    if _is_private_chat(update):
+        raise ValueError(tr("importhistory_chat_id_required"))
+    return _chat_id(update)
     _validate_player_limit(session)
 
 
@@ -378,6 +393,7 @@ def _help_text() -> str:
         "",
         "<b>Итоги и анализ</b>",
         "/list - текущая таблица",
+        "/stats - статистика игроков по чату",
     ]
     if _premium_feature_enabled("analyze"):
         lines.append("/analyze - таблица и анализ расхождения")
@@ -1213,6 +1229,65 @@ async def history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await _message(update).reply_text(render_history(entries))
 
 
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
+    _sync_user(update)
+    services = get_services()
+    entries = services.store.build_chat_player_stats(_chat_id(update))
+    response = render_stats(entries) if _has_premium(update) else render_stats_basic(entries)
+    await _message(update).reply_text(response, parse_mode=ParseMode.HTML)
+
+
+async def import_history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = _message(update)
+    if not _is_super_admin_update(update):
+        await message.reply_text(tr("system_command_forbidden"))
+        return
+
+    text = message.text or ""
+    parts = text.split("\n", 1)
+    if len(parts) == 1:
+        await message.reply_text(tr("importhistory_usage"), parse_mode=ParseMode.HTML)
+        return
+
+    services = get_services()
+    try:
+        first_line = parts[0]
+        _, _, command_args_text = first_line.partition(" ")
+        request = parse_import_command_request(command_args_text, parts[1])
+        target_chat_id = _import_target_chat_id(update, request.chat_id)
+        games = parse_history_dump(
+            request.history_text,
+            alias_map=request.alias_map,
+            date_fixes=request.date_fixes,
+            tz_name="Asia/Nicosia",
+        )
+        summary = summarize_games(games)
+        if request.dry_run:
+            await message.reply_text(
+                tr("importhistory_dry_run", chat_id=target_chat_id, summary=build_dry_run_report(games))
+            )
+            return
+
+        imported, skipped = import_games(
+            services.store.session_factory,
+            chat_id=target_chat_id,
+            games=games,
+        )
+        await message.reply_text(
+            tr(
+                "importhistory_done",
+                chat_id=target_chat_id,
+                imported=imported,
+                skipped=skipped,
+                summary=summary,
+            )
+        )
+    except Exception as exc:
+        await message.reply_text(tr("generic_error", error=exc))
+
+
 async def limits_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reply_private_info_for_non_admin(update):
         return
@@ -1435,6 +1510,8 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("remove", remove))
     application.add_handler(CommandHandler("removeAll", remove_all))
     application.add_handler(CommandHandler("list", list_cmd))
+    application.add_handler(CommandHandler("stats", stats_cmd))
+    application.add_handler(CommandHandler("importhistory", import_history_cmd))
     if _premium_feature_enabled("analyze"):
         application.add_handler(CommandHandler("analyze", analyze_cmd))
     if _premium_feature_enabled("history"):
