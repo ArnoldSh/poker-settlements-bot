@@ -60,6 +60,7 @@ RU_CATALOG = Catalog(
         "missing_message": "Нужно текстовое сообщение, чтобы я понял команду.",
         "missing_chat": "Не удалось определить чат для этой команды.",
         "missing_user": "Не удалось определить пользователя Telegram.",
+        "missing_username": "У автора сообщения нет Telegram username. Укажите игрока явно: @user.",
         "webhook_secret_invalid": "Неверный secret token вебхука.",
         "empty_name": "Пустое имя игрока.",
         "invalid_player_tag": (
@@ -68,7 +69,7 @@ RU_CATALOG = Catalog(
         ),
         "parse_line_format": (
             "Строка не распознана. Форматы: "
-            "@user 100, @user 100, 20, @user 10+20+20, @user 10+20+20, 5."
+            "@user 100, @user 10+20+20, @user 10+20+20 -> 5, @user 20 40 40 -> 133.50."
         ),
         "parse_amount_expression": "Не удалось распознать сумму '{expression}'. Используйте числа и знак '+'.",
         "balance_mismatch": (
@@ -219,20 +220,33 @@ RU_CATALOG = Catalog(
         "group_players_empty": "Сначала добавьте игроков, потом можно сохранять компанию.",
         "no_active_game": "Нет текущей игры. Начните новую через /newgame.",
         "game_closed": "Эта игра уже закрыта. Чтобы начать новую, используйте /newgame.",
-        "add_usage": "Использование: /add @user 100 или /add @user 100, 40 или /add @user 10+20+20, 40",
-        "add_success": "OK: {name} — вход {buyin}, выход {out}",
+        "add_usage": "Использование: /add 100 или /add @user 100. Команда принимает одно число; для корректировки можно передать отрицательную сумму.",
+        "add_success": "OK: {name} — закуп {amount}. Суммарный вход: {buyin}",
+        "add_adjustment_success": "OK: {name} — КОРРЕКТИРОВКА {amount}. Суммарный вход: {buyin}",
+        "out_usage": "Использование: /out 136.20 или /out @user 136.20. Команда принимает одно число.",
+        "out_success": "OK: {name} — выход {out}",
         "generic_error": "Ошибка: {error}",
+        "addall_usage": (
+            "Отправьте команду так:\n"
+            "<code>/addAll\n"
+            "@ivan 100\n"
+            "@anna 50 -> 0\n"
+            "@petr 80+20 -> 200</code>"
+        ),
+        "addall_added": "Добавлены: {players}",
+        "addall_added_empty": "Добавлены: -",
+        "addall_errors": "Ошибки:\n{errors}",
         "addblock_usage": (
             "Отправьте команду так:\n"
-            "<code>/addblock\n"
+            "<code>/addAll\n"
             "@ivan 100\n"
-            "@anna 50, 0\n"
-            "@petr 80+20, 200</code>"
+            "@anna 50 -> 0\n"
+            "@petr 80+20 -> 200</code>"
         ),
         "addblock_added": "Добавлены: {players}",
         "addblock_added_empty": "Добавлены: -",
         "addblock_errors": "Ошибки:\n{errors}",
-        "remove_usage": "Использование: /remove @user",
+        "remove_usage": "Использование: /remove или /remove @user",
         "remove_done": "Удален.",
         "remove_missing": "Игрок не найден.",
         "remove_all_done": "Все игроки из текущей игры удалены.",
@@ -255,7 +269,7 @@ RU_CATALOG = Catalog(
         "list_analysis_player_buyin_match": "• У {player} суммарный вход ровно {amount}.",
         "list_analysis_player_out_match": "• У {player} выход ровно {amount}.",
         "list_analysis_no_exact": "Точных совпадений на {amount} не нашел. Вероятно, ошибка распределена по нескольким записям.",
-        "calc_no_data": "Нет данных по игрокам. Сначала добавьте игроков через /add или /addblock.",
+        "calc_no_data": "Нет данных по игрокам. Сначала добавьте игроков через /add или /addAll.",
         "calc_mode_hub": "Режим: HUB. Хаб: <b>{hub}</b>.",
         "calc_mode_direct": "Режим: DIRECT.",
         "calc_no_transfers": "{highlights}\n\nВсе и так в нуле — переводов не требуется.",

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 from telegram import InputFile, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 from poker_bot.commentary import build_highlights
 from poker_bot.domain import Game, settle_direct, settle_hub
@@ -119,6 +119,30 @@ def _apply_player_line(session: GameSession, name: str, buyin, out) -> None:
     if name not in session.game.players and len(session.game.players) >= limit:
         raise ValueError(tr("player_limit_reached", limit=limit))
     session.game.add_or_update(name, buyin, out)
+    _validate_player_limit(session)
+
+
+def _apply_buyin_entry(session: GameSession, name: str, amount) -> None:
+    limit = get_services().settings.max_players_per_game
+    player = session.game.players.get(name)
+    if player is None:
+        if len(session.game.players) >= limit:
+            raise ValueError(tr("player_limit_reached", limit=limit))
+        session.game.add_or_update(name, amount, 0)
+        return
+    session.game.add_or_update(name, player.buyin + amount, player.out)
+    _validate_player_limit(session)
+
+
+def _apply_out_value(session: GameSession, name: str, amount) -> None:
+    limit = get_services().settings.max_players_per_game
+    player = session.game.players.get(name)
+    if player is None:
+        if len(session.game.players) >= limit:
+            raise ValueError(tr("player_limit_reached", limit=limit))
+        session.game.add_or_update(name, 0, amount)
+        return
+    session.game.add_or_update(name, player.buyin, amount)
     _validate_player_limit(session)
 
 
@@ -346,16 +370,11 @@ def _help_text() -> str:
         "",
         "<b>Обычный режим</b>",
         "/newgame - новая пустая игра",
-        "",
-        "/add &lt;строка&gt; - добавить или обновить игрока",
-        "/addblock - добавить игроков блоком",
-        "/remove @user - удалить игрока",
+        "/add [@user] &lt;sum&gt; - добавить закуп",
+        "/out [@user] &lt;sum&gt; - зафиксировать выход",
+        "/addAll - задать игроков блоком",
+        "/remove [@user] - удалить игрока",
         "/removeAll - удалить всех игроков",
-        "",
-        "<b>Интерактивный режим</b>",
-        "/newgame i - начать сбор входов и выходов сообщениями",
-        "/finish - завершить этап входов и перейти к выходам",
-        "/restart - пересобрать интерактивную игру из сообщений",
         "",
         "<b>Итоги и анализ</b>",
         "/list - текущая таблица",
@@ -390,11 +409,12 @@ def _help_text() -> str:
             "/limits - текущие лимиты и использование за 30 дней",
             "",
             "<b>Форматы ввода</b>",
-            "<code>/add @ivan 100</code>",
-            "<code>/add @ivan 100, 20</code>",
-            "<code>/add @ivan 10+20+20</code>",
-            "<code>/add @ivan 10+20+20, 50</code>",
-            "В /addblock можно писать по одному игроку на строку.",
+            "<code>/add 20</code>",
+            "<code>/add @ivan -5</code>",
+            "<code>/out 136.20</code>",
+            "<code>/out @ivan 136.20</code>",
+            "<code>/addAll\n@ivan 20 40 40 -> 133.50</code>",
+            "В /addAll можно писать по одному игроку на строку.",
         ]
     )
     return "\n".join(lines)
@@ -480,6 +500,25 @@ def _interactive_player_name(update: Update) -> str:
     if user.username:
         return normalize_name(user.username)
     return normalize_name(f"user_{user.id}")
+
+
+def _command_author_player_name(update: Update) -> str:
+    user = update.effective_user
+    if user is None:
+        raise ValueError(tr("missing_user"))
+    if not user.username:
+        raise ValueError(tr("missing_username"))
+    return normalize_name(user.username)
+
+
+def _player_and_amount_from_args(update: Update, args: list[str]) -> tuple[str, str]:
+    if not args:
+        raise ValueError(tr("parse_line_format"))
+    if len(args) == 1:
+        return _command_author_player_name(update), args[0]
+    if args[0].startswith("@"):
+        return normalize_name(args[0]), " ".join(args[1:])
+    return _command_author_player_name(update), " ".join(args)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -761,25 +800,24 @@ async def newgame(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _message(update).reply_text(reason or tr("subscription_required_new_game"))
         return
 
-    interactive = bool(context.args and context.args[0].strip().lower() == "i")
     session = services.store.start_new_game(
         _chat_id(update),
         created_by_telegram_user_id=_telegram_user_id(update),
-        input_mode="interactive" if interactive else "manual",
+        input_mode="manual",
     )
     services.store.record_product_event(
         "game_started",
         telegram_user_id=user_id,
         chat_id=_chat_id(update),
         game_id=session.id,
-        properties={"source": "interactive" if interactive else "empty"},
+        properties={"source": "empty"},
     )
     subscription = _get_subscription_for_update(update)
     _allowed, _reason, usage_warning = _chat_usage_gate(update)
     await _message(update).reply_text(
         _join_text(
             [
-                tr("newgame_interactive_done") if interactive else tr("newgame_done"),
+                tr("newgame_done"),
                 usage_warning or "",
                 _limits_text(update, subscription, user_id),
             ]
@@ -976,22 +1014,63 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     try:
-        raw_line = " ".join(context.args)
-        name, buyin, out, buyin_entries = parse_line_with_buyin_entries(raw_line)
-        _apply_player_line(session, name, buyin, out)
-        services.store.save_players_and_manual_buyins(
+        name, amount_expr = _player_and_amount_from_args(update, context.args)
+        amount = parse_number_only(amount_expr)
+        if amount is None:
+            await message.reply_text(tr("add_usage"))
+            return
+        _apply_buyin_entry(session, name, amount)
+        services.store.save_players_and_add_manual_buyin(
             session.id,
             session.game,
-            {name: buyin_entries},
+            name,
+            amount,
             source_message_id=message.message_id,
-            raw_text_by_player={name: raw_line},
+            raw_text=" ".join(context.args),
         )
-        await message.reply_text(tr("add_success", name=name, buyin=eur(buyin), out=eur(out)))
+        await message.reply_text(
+            tr(
+                "add_adjustment_success" if amount < 0 else "add_success",
+                name=name,
+                amount=eur(amount),
+                buyin=eur(session.game.players[name].buyin),
+            )
+        )
     except Exception as exc:
         await message.reply_text(tr("generic_error", error=exc))
 
 
-async def addblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def out(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if await _reply_private_info_for_non_admin(update):
+        return
+    _sync_user(update)
+    services = get_services()
+    message = _message(update)
+
+    try:
+        session = _require_open_game(services.store.get_latest(_chat_id(update)))
+    except Exception as exc:
+        await message.reply_text(tr("generic_error", error=exc))
+        return
+
+    if not context.args:
+        await message.reply_text(tr("out_usage"))
+        return
+
+    try:
+        name, amount_expr = _player_and_amount_from_args(update, context.args)
+        amount = parse_number_only(amount_expr)
+        if amount is None:
+            await message.reply_text(tr("out_usage"))
+            return
+        _apply_out_value(session, name, amount)
+        services.store.save_players(session.id, session.game)
+        await message.reply_text(tr("out_success", name=name, out=eur(amount)))
+    except Exception as exc:
+        await message.reply_text(tr("generic_error", error=exc))
+
+
+async def add_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if await _reply_private_info_for_non_admin(update):
         return
     _sync_user(update)
@@ -1007,7 +1086,7 @@ async def addblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     parts = text.split("\n", 1)
 
     if len(parts) == 1:
-        await message.reply_text(tr("addblock_usage"), parse_mode=ParseMode.HTML)
+        await message.reply_text(tr("addall_usage"), parse_mode=ParseMode.HTML)
         return
 
     added: list[str] = []
@@ -1035,12 +1114,16 @@ async def addblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
     response_lines = [
-        tr("addblock_added", players=", ".join(added)) if added else tr("addblock_added_empty")
+        tr("addall_added", players=", ".join(added)) if added else tr("addall_added_empty")
     ]
     if errors:
-        response_lines.append(tr("addblock_errors", errors="\n".join(errors)))
+        response_lines.append(tr("addall_errors", errors="\n".join(errors)))
 
     await message.reply_text("\n".join(response_lines), parse_mode=ParseMode.HTML)
+
+
+async def addblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await add_all(update, context)
 
 
 async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1054,21 +1137,16 @@ async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     except Exception as exc:
         await message.reply_text(tr("generic_error", error=exc))
         return
-    if session.is_interactive:
-        await message.reply_text(tr("remove_interactive_unavailable"))
-        return
-
-    if not context.args:
-        await message.reply_text(tr("remove_usage"))
-        return
-
-    player_name = normalize_name(context.args[0])
-    if session.game.remove(player_name):
-        services.store.save_players(session.id, session.game)
-        services.store.delete_manual_buyins_for_player(session.id, player_name)
-        await message.reply_text(tr("remove_done"))
-    else:
-        await message.reply_text(tr("remove_missing"))
+    try:
+        player_name = normalize_name(context.args[0]) if context.args else _command_author_player_name(update)
+        if session.game.remove(player_name):
+            services.store.save_players(session.id, session.game)
+            services.store.delete_manual_buyins_for_player(session.id, player_name)
+            await message.reply_text(tr("remove_done"))
+        else:
+            await message.reply_text(tr("remove_missing"))
+    except Exception as exc:
+        await message.reply_text(tr("generic_error", error=exc))
 
 
 async def remove_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1082,10 +1160,6 @@ async def remove_all(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     except Exception as exc:
         await message.reply_text(tr("generic_error", error=exc))
         return
-    if session.is_interactive:
-        await message.reply_text(tr("remove_interactive_unavailable"))
-        return
-
     session.game.players.clear()
     services.store.save_players(session.id, session.game)
     services.store.delete_manual_buyins_for_game(session.id)
@@ -1207,9 +1281,6 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     if session is None:
         await message.reply_text(tr("no_active_game"))
-        return
-    if session.is_interactive and session.interactive_phase == "buyin":
-        await message.reply_text(tr("interactive_calc_before_finish"))
         return
     if not session.game.players:
         await message.reply_text(tr("calc_no_data"))
@@ -1350,8 +1421,6 @@ def register_handlers(application: Application) -> None:
     if _premium_feature_enabled("sub_refund"):
         application.add_handler(CommandHandler("sub_refund", refund_subscription))
     application.add_handler(CommandHandler("newgame", newgame))
-    application.add_handler(CommandHandler("finish", finish_interactive))
-    application.add_handler(CommandHandler("restart", restart_interactive))
     if _premium_feature_enabled("savegroup"):
         application.add_handler(CommandHandler("savegroup", savegroup))
     if _premium_feature_enabled("groups"):
@@ -1360,6 +1429,8 @@ def register_handlers(application: Application) -> None:
     if _premium_feature_enabled("revanche"):
         application.add_handler(CommandHandler("revanche", revanche))
     application.add_handler(CommandHandler("add", add))
+    application.add_handler(CommandHandler("out", out))
+    application.add_handler(CommandHandler(["addAll", "addall"], add_all))
     application.add_handler(CommandHandler("addblock", addblock))
     application.add_handler(CommandHandler("remove", remove))
     application.add_handler(CommandHandler("removeAll", remove_all))
@@ -1372,5 +1443,3 @@ def register_handlers(application: Application) -> None:
         application.add_handler(CommandHandler("export_csv", export_csv_cmd))
     application.add_handler(CommandHandler("limits", limits_cmd))
     application.add_handler(CommandHandler("calc", calc))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_message))
-    application.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & filters.TEXT & ~filters.COMMAND, interactive_message))

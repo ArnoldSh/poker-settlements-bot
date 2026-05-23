@@ -9,6 +9,7 @@ from poker_bot.i18n import tr
 MAX_PLAYER_NAME_LENGTH = 64
 TAG_PATTERN = re.compile(r"^@?[A-Za-z0-9_]+$")
 NUMBER_ONLY_PATTERN = re.compile(r"^[+-]?\d+(?:[.,]\d+)?$")
+AMOUNT_COMPONENT_SEPARATOR_PATTERN = re.compile(r"[+\s]+")
 
 
 def normalize_name(name: str) -> str:
@@ -29,7 +30,7 @@ def parse_amount_expression(expression: str) -> Decimal:
     if not cleaned:
         raise ValueError(tr("parse_amount_expression", expression=expression))
 
-    parts = [part.strip() for part in cleaned.split("+")]
+    parts = [part.strip() for part in AMOUNT_COMPONENT_SEPARATOR_PATTERN.split(cleaned)]
     if any(not part for part in parts):
         raise ValueError(tr("parse_amount_expression", expression=expression))
 
@@ -44,7 +45,7 @@ def parse_amount_components(expression: str) -> list[Decimal]:
     if not cleaned:
         raise ValueError(tr("parse_amount_expression", expression=expression))
 
-    parts = [part.strip() for part in cleaned.split("+")]
+    parts = [part.strip() for part in AMOUNT_COMPONENT_SEPARATOR_PATTERN.split(cleaned)]
     if any(not part for part in parts):
         raise ValueError(tr("parse_amount_expression", expression=expression))
 
@@ -67,17 +68,10 @@ def split_amounts(rest: str) -> tuple[str, str]:
         buy_expr, out_expr = (part.strip() for part in rest.split("—", 1))
         return buy_expr, out_expr
 
-    if "," in rest:
-        buy_expr, out_expr = (part.strip() for part in rest.split(",", 1))
-        return buy_expr, out_expr
+    if re.search(r",\s", rest):
+        raise ValueError(tr("parse_line_format"))
 
-    parts = rest.split()
-    if len(parts) == 1:
-        return parts[0], "0"
-    if len(parts) == 2:
-        return parts[0], parts[1]
-
-    raise ValueError(tr("parse_line_format"))
+    return rest, "0"
 
 
 def parse_line(text: str) -> tuple[str, Decimal, Decimal]:

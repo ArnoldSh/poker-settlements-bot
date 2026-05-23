@@ -10,23 +10,36 @@ class ParseLineTests(unittest.TestCase):
     def test_single_amount_sets_zero_out(self) -> None:
         self.assertEqual(parse_line("ivan 100"), ("@ivan", Decimal("100.00"), Decimal("0.00")))
 
-    def test_comma_splits_buyin_and_out(self) -> None:
-        self.assertEqual(parse_line("@ivan 100, 20"), ("@ivan", Decimal("100.00"), Decimal("20.00")))
+    def test_comma_is_treated_as_invalid_buyin_separator(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_line("@ivan 100, 20")
 
     def test_sum_expression_is_supported(self) -> None:
         self.assertEqual(parse_line("ivan 10+20+20"), ("@ivan", Decimal("50.00"), Decimal("0.00")))
 
-    def test_sum_expression_with_explicit_out_is_supported(self) -> None:
-        self.assertEqual(parse_line("ivan 10+20+20, 5"), ("@ivan", Decimal("50.00"), Decimal("5.00")))
+    def test_sum_expression_without_arrow_sets_zero_out(self) -> None:
+        self.assertEqual(parse_line("ivan 10+20+20"), ("@ivan", Decimal("50.00"), Decimal("0.00")))
 
     def test_sum_expression_preserves_buyin_entries(self) -> None:
         self.assertEqual(
-            parse_line_with_buyin_entries("ivan 20+20, 10"),
+            parse_line_with_buyin_entries("ivan 20+20 -> 10"),
             ("@ivan", Decimal("40.00"), Decimal("10.00"), [Decimal("20.00"), Decimal("20.00")]),
         )
 
-    def test_legacy_space_syntax_is_still_supported(self) -> None:
-        self.assertEqual(parse_line("ivan 100 20"), ("@ivan", Decimal("100.00"), Decimal("20.00")))
+    def test_space_separated_buyin_sequence_preserves_entries(self) -> None:
+        self.assertEqual(
+            parse_line_with_buyin_entries("ivan 20 40 40 -> 133.50"),
+            ("@ivan", Decimal("100.00"), Decimal("133.50"), [Decimal("20.00"), Decimal("40.00"), Decimal("40.00")]),
+        )
+
+    def test_space_separated_out_sequence_is_summed(self) -> None:
+        self.assertEqual(
+            parse_line_with_buyin_entries("ivan 20 40 -> 50 16.20 70"),
+            ("@ivan", Decimal("60.00"), Decimal("136.20"), [Decimal("20.00"), Decimal("40.00")]),
+        )
+
+    def test_space_sequence_without_arrow_sets_zero_out(self) -> None:
+        self.assertEqual(parse_line("ivan 100 20"), ("@ivan", Decimal("120.00"), Decimal("0.00")))
 
     def test_legacy_arrow_syntax_is_still_supported(self) -> None:
         self.assertEqual(parse_line("@ivan 100 -> 20"), ("@ivan", Decimal("100.00"), Decimal("20.00")))
@@ -45,6 +58,9 @@ class ParseLineTests(unittest.TestCase):
     def test_number_only_accepts_dot_and_comma_decimal_separators(self) -> None:
         self.assertEqual(parse_number_only("10.5"), Decimal("10.50"))
         self.assertEqual(parse_number_only("10,5"), Decimal("10.50"))
+
+    def test_number_only_rejects_expression(self) -> None:
+        self.assertIsNone(parse_number_only("50+16.20+70"))
 
     def test_number_only_rejects_mixed_text(self) -> None:
         self.assertIsNone(parse_number_only("ivan 10"))

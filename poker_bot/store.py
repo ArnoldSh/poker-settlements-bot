@@ -252,7 +252,13 @@ class DatabaseStore:
                     delete(GameBuyinEntryModel).where(
                         GameBuyinEntryModel.game_id == session_id,
                         GameBuyinEntryModel.player_name == player_name,
-                        GameBuyinEntryModel.source == "manual",
+                        GameBuyinEntryModel.source.in_(["manual", "manual_adjustment"]),
+                    )
+                )
+                session.execute(
+                    delete(InteractiveGameMessageModel).where(
+                        InteractiveGameMessageModel.game_id == session_id,
+                        InteractiveGameMessageModel.player_name == player_name,
                     )
                 )
                 for amount in buyins:
@@ -261,11 +267,48 @@ class DatabaseStore:
                             game_id=session_id,
                             player_name=player_name,
                             amount=float(amount),
-                            source="manual",
+                            source="manual_adjustment" if amount < 0 else "manual",
                             source_message_id=source_message_id,
                             raw_text=raw_text_by_player.get(player_name, "")[:255],
                         )
                     )
+
+    def save_players_and_add_manual_buyin(
+        self,
+        session_id: int,
+        game: Game,
+        player_name: str,
+        amount: Decimal,
+        source_message_id: int | None = None,
+        raw_text: str | None = None,
+    ) -> None:
+        with self.session_factory.begin() as session:
+            game_row = session.get(ChatGameModel, session_id)
+            if game_row is None:
+                raise ValueError("Game session not found.")
+
+            game_row.players.clear()
+            session.flush()
+
+            for player in game.players.values():
+                game_row.players.append(
+                    GamePlayerModel(
+                        player_name=player.name,
+                        buyin=float(player.buyin),
+                        out=float(player.out),
+                    )
+                )
+
+            session.add(
+                GameBuyinEntryModel(
+                    game_id=session_id,
+                    player_name=player_name,
+                    amount=float(amount),
+                    source="manual_adjustment" if amount < 0 else "manual",
+                    source_message_id=source_message_id,
+                    raw_text=(raw_text or "")[:255],
+                )
+            )
 
     def delete_manual_buyins_for_player(self, session_id: int, player_name: str) -> None:
         with self.session_factory.begin() as session:
@@ -273,7 +316,13 @@ class DatabaseStore:
                 delete(GameBuyinEntryModel).where(
                     GameBuyinEntryModel.game_id == session_id,
                     GameBuyinEntryModel.player_name == player_name,
-                    GameBuyinEntryModel.source == "manual",
+                    GameBuyinEntryModel.source.in_(["manual", "manual_adjustment"]),
+                )
+            )
+            session.execute(
+                delete(InteractiveGameMessageModel).where(
+                    InteractiveGameMessageModel.game_id == session_id,
+                    InteractiveGameMessageModel.player_name == player_name,
                 )
             )
 
@@ -282,7 +331,12 @@ class DatabaseStore:
             session.execute(
                 delete(GameBuyinEntryModel).where(
                     GameBuyinEntryModel.game_id == session_id,
-                    GameBuyinEntryModel.source == "manual",
+                    GameBuyinEntryModel.source.in_(["manual", "manual_adjustment"]),
+                )
+            )
+            session.execute(
+                delete(InteractiveGameMessageModel).where(
+                    InteractiveGameMessageModel.game_id == session_id,
                 )
             )
 
