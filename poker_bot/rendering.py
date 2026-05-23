@@ -149,18 +149,7 @@ def render_stats(entries: list[PlayerStatsEntry]) -> str:
 
     lines = [tr("stats_title")]
     for index, entry in enumerate(entries, start=1):
-        lines.append(
-            tr(
-                "stats_item",
-                index=index,
-                name=entry.player_name,
-                total=eur(entry.total_net),
-                games=entry.games_played,
-                average=eur(entry.average_net),
-                wins=entry.wins,
-                losses=entry.losses,
-            )
-        )
+        lines.append(_render_stats_card(index, entry))
     return "\n".join(lines)
 
 
@@ -170,14 +159,7 @@ def render_stats_basic(entries: list[PlayerStatsEntry]) -> str:
 
     lines = [tr("stats_title_basic")]
     for entry in entries:
-        lines.append(
-            tr(
-                "stats_item_basic",
-                name=entry.player_name,
-                total=eur(entry.total_net),
-                games=entry.games_played,
-            )
-        )
+        lines.append(_render_stats_basic_row(entry))
     return "\n".join(lines)
 
 
@@ -197,3 +179,26 @@ def render_basic_calc_with_stats(
     stats_text: str,
 ) -> str:
     return f"{render_basic_transfers(header, transfers)}\n\n{stats_text}"
+
+
+def _render_stats_card(index: int, entry: PlayerStatsEntry) -> str:
+    net_label = _stats_net_label(entry.total_net)
+    return (
+        f"\n<b>{index}. {entry.player_name}</b>\n"
+        f"{net_label} {eur(entry.total_net)}\n"
+        f"Игры: {entry.games_played} | Средний итог: {eur(entry.average_net)}\n"
+        f"Плюсовых: {entry.wins} | Минусовых: {entry.losses}"
+    )
+
+
+def _render_stats_basic_row(entry: PlayerStatsEntry) -> str:
+    net_label = _stats_net_label(entry.total_net)
+    return f"• <b>{entry.player_name}</b> {net_label} {eur(entry.total_net)} | игр: {entry.games_played}"
+
+
+def _stats_net_label(amount: Decimal) -> str:
+    if amount > 0:
+        return "+"
+    if amount < 0:
+        return "-"
+    return "="
